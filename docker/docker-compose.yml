@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      APP_ENV: development
+      DATABASE_URL: sqlite:///./hr_ai_assistant.db
+      CONNECTOR_BACKEND: mock
+      LLM_BACKEND: mock
+      DEFAULT_DEMO_USER_ID: demo_manager_meryem
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    environment:
+      VITE_API_BASE_URL: /api
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
