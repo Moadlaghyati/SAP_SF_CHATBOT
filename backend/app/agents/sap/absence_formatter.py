@@ -40,12 +40,22 @@ def format_absence_summary(
         return f"No absence records were found for user {user_id} from {start_date} to {end_date}."
 
     lines = [
-        f"Found {len(absences)} absence record{'s' if len(absences) != 1 else ''} for user {user_id} from {start_date} to {end_date}:"
+        f"Found **{len(absences)} absence record{'s' if len(absences) != 1 else ''}** for user **{user_id}** from {start_date} to {end_date}.",
+        "",
+        "| Absence type | Start date | End date | Approval status | Days | Hours |",
+        "| --- | --- | --- | --- | ---: | ---: |",
     ]
-    for index, absence in enumerate(absences, start=1):
-        absence_type = absence.absence_type or "Absence"
-        status = absence.approval_status or "Status unavailable"
-        lines.append(f"{index}. {absence_type} - {absence.start_date} to {absence.end_date} - {status}")
+    for absence in absences:
+        lines.append(
+            "| {absence_type} | {start_date} | {end_date} | {status} | {days} | {hours} |".format(
+                absence_type=_markdown_cell(absence.absence_type or "Absence"),
+                start_date=_markdown_cell(absence.start_date or "n/a"),
+                end_date=_markdown_cell(absence.end_date or "n/a"),
+                status=_markdown_cell(absence.approval_status or "Status unavailable"),
+                days=_format_optional_number(absence.quantity_in_days),
+                hours=_format_optional_number(absence.quantity_in_hours),
+            )
+        )
     return "\n".join(lines)
 
 
@@ -60,14 +70,36 @@ def format_workforce_absence_summary(
         return f"No absence records were found for employees on {period}."
 
     lines = [
-        f"Found {len(absences)} employee absence record{'s' if len(absences) != 1 else ''} on {period}:"
+        f"Found **{len(absences)} employee absence record{'s' if len(absences) != 1 else ''}** on {period}.",
+        "",
+        "| User | Absence type | Start date | End date | Approval status | Days | Hours |",
+        "| --- | --- | --- | --- | --- | ---: | ---: |",
     ]
-    for index, absence in enumerate(absences, start=1):
-        user_id = absence.user_id or "Unknown user"
-        absence_type = absence.absence_type or "Absence"
-        status = absence.approval_status or "Status unavailable"
-        lines.append(f"{index}. User {user_id} - {absence_type} - {absence.start_date} to {absence.end_date} - {status}")
+    for absence in absences:
+        lines.append(
+            "| {user_id} | {absence_type} | {start_date} | {end_date} | {status} | {days} | {hours} |".format(
+                user_id=_markdown_cell(absence.user_id or "Unknown user"),
+                absence_type=_markdown_cell(absence.absence_type or "Absence"),
+                start_date=_markdown_cell(absence.start_date or "n/a"),
+                end_date=_markdown_cell(absence.end_date or "n/a"),
+                status=_markdown_cell(absence.approval_status or "Status unavailable"),
+                days=_format_optional_number(absence.quantity_in_days),
+                hours=_format_optional_number(absence.quantity_in_hours),
+            )
+        )
     return "\n".join(lines)
+
+
+def _format_optional_number(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:g}"
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ").strip()
 
 
 def _extract_results(payload: Any) -> list[Any]:

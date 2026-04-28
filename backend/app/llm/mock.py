@@ -72,7 +72,8 @@ class MockLocalLLMClient(LocalLLMClient):
         if status == "clarification_required":
             options = payload.clarification_options
             if options:
-                return "I found multiple matching employees. Please clarify which one you mean: " + ", ".join(options) + "."
+                rendered_options = "\n".join(f"- {option}" for option in options)
+                return f"I found multiple matching employees. Please clarify which one you mean:\n\n{rendered_options}"
             return payload.error_message or "I need a clearer employee name or date range to answer that safely."
         if status == "not_found":
             return payload.error_message or "I could not find a matching employee in the demo dataset."
@@ -80,7 +81,7 @@ class MockLocalLLMClient(LocalLLMClient):
             capabilities = self._render_supported_capabilities(payload.supported_capabilities)
             return (
                 "I cannot help with that request in this demo yet. "
-                f"I can help with {capabilities}."
+                f"I can help with:\n\n{capabilities}"
             )
         if status == "invalid_input":
             return payload.error_message or "I could not safely interpret that request. Please include an employee and date range."
@@ -92,6 +93,14 @@ class MockLocalLLMClient(LocalLLMClient):
         intent = payload.intent
         employee_name = payload.employee_name or result.get("employee_display_name") or "the employee"
 
+        if result.get("mode") == "sap_absence_tool_results":
+            raw_summary = result.get("raw_summary")
+            if isinstance(raw_summary, str) and raw_summary.strip():
+                return raw_summary.strip()
+            sap_result = result.get("sap_result", {})
+            absences = sap_result.get("absences", []) if isinstance(sap_result, dict) else []
+            return f"The SAP absence retrieval tool returned **{len(absences)} absence record(s)**."
+
         if intent == "absence_list":
             records = result.get("records", [])
             if not records:
@@ -99,33 +108,44 @@ class MockLocalLLMClient(LocalLLMClient):
                     f"{employee_name} has no recorded absences between "
                     f"{result['period']['start']} and {result['period']['end']}."
                 )
-            rendered = "; ".join(
-                f"{record['absence_type']} from {record['start_date']} to {record['end_date']} ({record['days']} days)"
+            rows = "\n".join(
+                "| {absence_type} | {start_date} | {end_date} | {days} |".format(
+                    absence_type=record["absence_type"],
+                    start_date=record["start_date"],
+                    end_date=record["end_date"],
+                    days=record["days"],
+                )
                 for record in records
             )
             return (
-                f"{employee_name} has {len(records)} absence record(s) between "
-                f"{result['period']['start']} and {result['period']['end']}: {rendered}."
+                f"{employee_name} has **{len(records)} absence record(s)** between "
+                f"{result['period']['start']} and {result['period']['end']}.\n\n"
+                "| Absence type | Start date | End date | Days |\n"
+                "| --- | --- | --- | --- |\n"
+                f"{rows}"
             )
 
         if intent == "absence_breakdown":
-            breakdown = ", ".join(
-                f"{item['type']}: {item['count']} absence(s), {item['days']} day(s)"
+            rows = "\n".join(
+                f"| {item['type']} | {item['count']} | {item['days']} |"
                 for item in result.get("by_type", [])
             )
             return (
-                f"{employee_name} had {result['absence_count']} absence(s) totaling {result['absence_days']} day(s) "
-                f"between {result['period']['start']} and {result['period']['end']}. Breakdown by type: {breakdown}."
+                f"{employee_name} had **{result['absence_count']} absence(s)** totaling "
+                f"**{result['absence_days']} day(s)** between {result['period']['start']} and {result['period']['end']}.\n\n"
+                "| Absence type | Absences | Days |\n"
+                "| --- | --- | --- |\n"
+                f"{rows}"
             )
 
         if result.get("absence_type"):
             return (
-                f"{employee_name} had {result['absence_count']} {result['absence_type']} absence(s) "
+                f"{employee_name} had **{result['absence_count']} {result['absence_type']} absence(s)** "
                 f"between {result['period']['start']} and {result['period']['end']}."
             )
 
         return (
-            f"{employee_name} had {result['absence_count']} absence(s) totaling {result['absence_days']} day(s) "
+            f"{employee_name} had **{result['absence_count']} absence(s)** totaling **{result['absence_days']} day(s)** "
             f"between {result['period']['start']} and {result['period']['end']}."
         )
 
@@ -167,8 +187,12 @@ class MockLocalLLMClient(LocalLLMClient):
 
         if re.search(r"\bwhat can you do\b", lowered, re.IGNORECASE) or re.search(r"\bhelp\b", lowered, re.IGNORECASE):
             return (
-                "I can help with absence counts, absence breakdowns by type, and absence lists for authorized employees in the demo dataset. "
-                "For example, ask: How many absences did Sara Bennani have between 2026-01-01 and 2026-03-31?"
+                "I can help with:\n\n"
+                "- Absence counts for authorized employees\n"
+                "- Absence breakdowns by type\n"
+                "- Absence lists within a clear date range\n"
+                "- Authorization explanations for demo access decisions\n\n"
+                "For example: **How many absences did Sara Bennani have between 2026-01-01 and 2026-03-31?**"
             )
 
         if re.search(r"\bthank", lowered, re.IGNORECASE):
@@ -181,10 +205,8 @@ class MockLocalLLMClient(LocalLLMClient):
 
     def _render_supported_capabilities(self, supported_capabilities: list[str]) -> str:
         if not supported_capabilities:
-            return "absence counts, absence breakdowns, and absence lists"
-        if len(supported_capabilities) == 1:
-            return supported_capabilities[0]
-        return ", ".join(supported_capabilities[:-1]) + f", and {supported_capabilities[-1]}"
+            supported_capabilities = ["absence counts", "absence breakdowns", "absence lists"]
+        return "\n".join(f"- {capability}" for capability in supported_capabilities)
 
     def _try_evaluate_arithmetic(self, user_message: str) -> str | None:
         normalized = user_message.lower().strip()

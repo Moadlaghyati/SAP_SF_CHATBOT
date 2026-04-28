@@ -13,19 +13,22 @@ function JsonBlock({ value }: { value: unknown }) {
 
 function ProcessSteps({ steps }: { steps: ToolTrace["process_steps"] | undefined }) {
   if (!steps || steps.length === 0) {
-    return <p>No workflow steps recorded yet.</p>;
+    return <p className="supporting-copy">No workflow steps recorded yet.</p>;
   }
 
   return (
-    <ol className="process-steps">
+    <ol className="workflow-timeline">
       {steps.map((step, index) => (
-        <li className="process-step" key={`${step.step}-${index}`}>
-          <div className="process-step__header">
-            <span className="process-step__name">{step.step}</span>
-            <StatusPill label={step.status} tone={step.status} />
+        <li className="workflow-step" key={`${step.step}-${index}`}>
+          <span className={`workflow-step__dot workflow-step__dot--${step.status}`} />
+          <div className="workflow-step__content">
+            <div className="workflow-step__header">
+              <span className="workflow-step__name">{step.step}</span>
+              <StatusPill label={step.status} tone={step.status} />
+            </div>
+            <p>{step.detail}</p>
+            {Object.keys(step.data ?? {}).length > 0 ? <JsonBlock value={step.data} /> : null}
           </div>
-          <p>{step.detail}</p>
-          {Object.keys(step.data ?? {}).length > 0 ? <JsonBlock value={step.data} /> : null}
         </li>
       ))}
     </ol>
@@ -34,15 +37,18 @@ function ProcessSteps({ steps }: { steps: ToolTrace["process_steps"] | undefined
 
 export function TracePanel({ trace, request, health }: TracePanelProps) {
   return (
-    <section className="panel trace-panel">
-      <div className="panel__header">
-        <h2>Trace & Debug</h2>
+    <section className="trace-panel">
+      <div className="section-heading">
+        <div>
+          <span className="section-kicker">Inspector</span>
+          <h2>Trace overview</h2>
+        </div>
         {request ? <StatusPill label={request.status} tone={request.status} /> : null}
       </div>
 
       <div className="trace-grid">
         <div className="trace-section">
-          <h3>Trust Signals</h3>
+          <h3>Trust signals</h3>
           <p>Model inference: {trace?.model_inference ?? health?.model_inference ?? "local"}</p>
           <p>External AI calls: {trace?.external_ai_calls ?? health?.external_ai_calls ?? "none"}</p>
           <p>LLM backend: {trace?.llm_backend ?? health?.llm_backend ?? "unknown"}</p>
@@ -56,17 +62,17 @@ export function TracePanel({ trace, request, health }: TracePanelProps) {
         </div>
 
         <div className="trace-section trace-section--wide">
-          <h3>Workflow Steps</h3>
+          <h3>Workflow timeline</h3>
           <ProcessSteps steps={trace?.process_steps} />
         </div>
 
         <div className="trace-section">
-          <h3>Parsed Intent & Entities</h3>
+          <h3>Parsed intent</h3>
           <JsonBlock value={trace?.parsed_request ?? {}} />
         </div>
 
         <div className="trace-section">
-          <h3>Tool Execution</h3>
+          <h3>Tool execution</h3>
           <p>Tool: {trace?.tool_name ?? "No tool selected"}</p>
           <JsonBlock value={trace?.tool_arguments ?? {}} />
         </div>
@@ -78,12 +84,12 @@ export function TracePanel({ trace, request, health }: TracePanelProps) {
         </div>
 
         <div className="trace-section">
-          <h3>Minimized Result</h3>
+          <h3>Minimized result</h3>
           <JsonBlock value={trace?.minimized_result ?? {}} />
         </div>
 
         <div className="trace-section">
-          <h3>Final Answer Metadata</h3>
+          <h3>Answer metadata</h3>
           <JsonBlock value={trace?.answer_metadata ?? {}} />
         </div>
 

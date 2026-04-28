@@ -1,8 +1,6 @@
-import type { RequestStatus } from "../types/api";
-
 interface StatusPillProps {
   label: string;
-  tone?: RequestStatus | "neutral" | "completed" | "running" | "stopped" | "needs_clarification";
+  tone?: string;
 }
 
 export function StatusPill({ label, tone = "neutral" }: StatusPillProps) {

@@ -14,13 +14,34 @@ export function DemoUserSwitcher({
   usingFallbackUsers = false,
 }: DemoUserSwitcherProps) {
   const activeUser = users.find((user) => user.user_id === activeUserId);
+  const initials =
+    activeUser?.display_name
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") ?? "HR";
 
   return (
-    <section className="panel panel--compact">
-      <div className="panel__header">
-        <h2>Demo User</h2>
-        {activeUser ? <span className="panel__eyebrow">{activeUser.role}</span> : null}
+    <section className="persona-card">
+      <div className="section-heading">
+        <div>
+          <span className="section-kicker">Identity</span>
+          <h2>Demo persona</h2>
+        </div>
+        {activeUser ? <span className="status-badge status-badge--neutral">{activeUser.role}</span> : null}
       </div>
+
+      <div className="persona-summary">
+        <div className="persona-avatar" aria-hidden="true">
+          {initials}
+        </div>
+        <div>
+          <strong>{activeUser?.display_name ?? "Loading persona"}</strong>
+          <span>{activeUser?.employee_id ?? "No employee id"}</span>
+        </div>
+      </div>
+
       <select
         className="select-input"
         value={activeUserId}
@@ -36,11 +57,10 @@ export function DemoUserSwitcher({
           </option>
         ))}
       </select>
-      <p className="muted-text">{activeUser?.description ?? "Choose a seeded demo persona."}</p>
+
+      <p className="supporting-copy">{activeUser?.description ?? "Choose a seeded demo persona."}</p>
       {usingFallbackUsers ? (
-        <p className="muted-text">
-          Showing built-in demo personas because the backend could not be reached yet.
-        </p>
+        <p className="inline-warning">Built-in personas are shown until the backend responds.</p>
       ) : null}
     </section>
   );

@@ -6,8 +6,9 @@ from dataclasses import asdict, is_dataclass
 from datetime import date
 from uuid import uuid4
 
+from app.agents.sap.absence_extraction import extract_absence_retrieval_params
 from app.agents.sap.absence_intent import detect_absence_intent
-from app.agents.sap.absence_schemas import SapAbsenceResult
+from app.agents.sap.absence_schemas import EmployeeAbsence, SapAbsenceResult, SapAbsenceSuccessResult
 from pydantic import ValidationError
 
 from app.audit.service import AuditService
@@ -88,26 +89,54 @@ class ChatOrchestrator:
                 },
             )
             if self._sap_absence_agent is not None and sap_absence_precheck.should_handle:
-                self._record_step(trace, "sap_absence_agent", "running", "Delegated request to the dedicated SAP Absence Agent.")
-                result = await self._sap_absence_agent.handle(
-                    message,
-                    step_recorder=lambda name, step_status, detail, data=None: self._record_step(
-                        trace, name, step_status, detail, data
-                    ),
+                sap_tool_messages = self._build_sap_absence_tool_messages(message)
+                self._record_step(
+                    trace,
+                    "sap_absence_agent",
+                    "running",
+                    "Delegated request to the dedicated SAP Absence Agent as a retrieval tool.",
+                    {"tool_call_count": len(sap_tool_messages)},
                 )
+                sap_results: list[SapAbsenceResult] = []
+                for tool_call_index, tool_message in enumerate(sap_tool_messages, start=1):
+                    self._record_step(
+                        trace,
+                        "sap_absence_tool_call",
+                        "running",
+                        "Running SAP absence retrieval tool.",
+                        {"tool_call_index": tool_call_index, "tool_message": tool_message},
+                    )
+                    sap_results.append(
+                        await self._sap_absence_agent.handle(
+                            tool_message,
+                            step_recorder=lambda name, step_status, detail, data=None: self._record_step(
+                                trace, name, step_status, detail, data
+                            ),
+                        )
+                    )
+                    self._record_step(
+                        trace,
+                        "sap_absence_tool_call",
+                        "completed",
+                        "SAP absence retrieval tool returned.",
+                        {"tool_call_index": tool_call_index, "result_status": sap_results[-1].status},
+                    )
+
+                result = sap_results[0] if len(sap_results) == 1 else self._combine_sap_results(sap_results)
                 if result.handled:
                     self._record_step(
                         trace,
                         "sap_absence_agent",
                         "completed" if result.status == "success" else result.status,
-                        "SAP Absence Agent returned a structured result.",
-                        {"result_status": result.status},
+                        "SAP Absence Agent returned structured tool result data for final answer generation.",
+                        {"result_status": result.status, "tool_call_count": len(sap_results)},
                     )
                     parsed_question = self._sap_result_to_parsed_question(result)
                     trace.detected_intent = "sap_absences"
                     trace.parsed_request = {
                         "intent": asdict(sap_absence_precheck),
                         "agent_result_status": result.status,
+                        "tool_call_count": len(sap_results),
                     }
                     trace.tool_name = "sap_absence_agent"
                     trace.authorization_outcome = "not_applicable"
@@ -115,7 +144,34 @@ class ChatOrchestrator:
                     trace.minimized_result = self._minimize_sap_absence_result(result)
                     status = trace.status  # type: ignore[assignment]
                     authorization_outcome = trace.authorization_outcome
-                    answer = self._sap_result_to_answer(result)
+                    answer_payload = {
+                        "mode": "sap_absence_tool_results",
+                        "tool_call_count": len(sap_results),
+                        "original_user_message": message,
+                        "sap_result": trace.minimized_result,
+                        "tool_results": [self._minimize_sap_absence_result(item) for item in sap_results],
+                        "raw_summary": self._sap_result_to_answer(result),
+                    }
+                    try:
+                        answer = await self._generate_answer(
+                            parsed_question=parsed_question,
+                            status=status,
+                            employee=None,
+                            result=answer_payload,
+                            error_message=self._sap_result_to_error_message(result),
+                            clarification_options=[],
+                            user_message=message,
+                        )
+                    except (LocalLLMUnavailableError, StructuredOutputError) as exc:
+                        trace.errors.append(str(exc))
+                        self._record_step(
+                            trace,
+                            "llm_answer_fallback",
+                            "completed",
+                            "Local model answer generation failed, so the backend synthesized an answer from SAP tool results.",
+                            {"safe_error": str(exc)},
+                        )
+                        answer = self._format_sap_tool_answer(message, result, sap_results)
                     return await self._finalize(
                         trace=trace,
                         request_id=request_id,
@@ -510,6 +566,150 @@ class ChatOrchestrator:
         }
         return "list_absences", minimized
 
+    def _build_sap_absence_tool_messages(self, message: str) -> list[str]:
+        user_ids = self._extract_sap_user_ids(message)
+        years = self._extract_comparison_years(message)
+        if len(years) > 1:
+            params = extract_absence_retrieval_params(message, current_date=self._settings.demo_reference_date)
+            if len(user_ids) == 1:
+                return [f"Show absences for user {user_ids[0]} in {year}" for year in years]
+            if params.employee_name:
+                return [f"Show absences for {params.employee_name} in {year}" for year in years]
+
+        if len(user_ids) <= 1:
+            return [message]
+
+        params = extract_absence_retrieval_params(message, current_date=self._settings.demo_reference_date)
+        start_date = params.start_date or date(self._settings.demo_reference_date.year, 1, 1).isoformat()
+        end_date = params.end_date or date(self._settings.demo_reference_date.year, 12, 31).isoformat()
+        return [f"Show absences for user {user_id} from {start_date} to {end_date}" for user_id in user_ids]
+
+    def _extract_comparison_years(self, message: str) -> list[int]:
+        years: list[int] = []
+        for match in re.findall(r"\b(?:19|20)\d{2}\b", message):
+            year = int(match)
+            if year not in years:
+                years.append(year)
+        return years
+
+    def _extract_sap_user_ids(self, message: str) -> list[str]:
+        matches = re.findall(r"\b(?:user(?:\s*id)?|userId)\s*(?:is|=|:)?\s*['\"]?([A-Za-z0-9_.-]+)['\"]?", message, re.IGNORECASE)
+        matches.extend(re.findall(r"\bfor\s+users?\s+([A-Za-z0-9_.-]+(?:\s*(?:,|and)\s*[A-Za-z0-9_.-]+)+)", message, re.IGNORECASE))
+
+        user_ids: list[str] = []
+        for match in matches:
+            for candidate in re.split(r"\s*(?:,|and)\s*", match):
+                cleaned = candidate.strip(" '\"?.")
+                if cleaned and cleaned.lower() not in {"and", "or"} and cleaned not in user_ids:
+                    user_ids.append(cleaned)
+        return user_ids
+
+    def _combine_sap_results(self, results: list[SapAbsenceResult]) -> SapAbsenceResult:
+        handled_results = [result for result in results if result.handled]
+        success_results = [result for result in handled_results if result.status == "success"]
+        if len(success_results) == len(results):
+            absences: list[EmployeeAbsence] = []
+            summaries: list[str] = []
+            start_dates: list[str] = []
+            end_dates: list[str] = []
+            for result in success_results:
+                assert isinstance(result, SapAbsenceSuccessResult)
+                absences.extend(result.absences)
+                summaries.append(result.summary_text)
+                start_dates.append(result.date_range["startDate"])
+                end_dates.append(result.date_range["endDate"])
+            return SapAbsenceSuccessResult(
+                handled=True,
+                type="sap_absences",
+                status="success",
+                employee=None,
+                date_range={"startDate": min(start_dates), "endDate": max(end_dates)},
+                absences=absences,
+                summary_text="\n\n".join(summaries),
+            )
+
+        return handled_results[0] if handled_results else results[0]
+
+    def _format_sap_tool_answer(
+        self,
+        message: str,
+        result: SapAbsenceResult,
+        sap_results: list[SapAbsenceResult],
+    ) -> str:
+        success_results = [item for item in sap_results if item.handled and item.status == "success"]
+        if not success_results:
+            return self._sap_result_to_answer(result)
+
+        if len(success_results) == 1 and "compare" not in message.lower():
+            return self._sap_result_to_answer(success_results[0])
+
+        summary_rows: list[str] = []
+        detail_rows: list[str] = []
+        for item in success_results:
+            assert isinstance(item, SapAbsenceSuccessResult)
+            period = self._format_period_label(item.date_range)
+            records = item.absences
+            approved = sum(1 for absence in records if (absence.approval_status or "").upper() == "APPROVED")
+            pending = sum(1 for absence in records if (absence.approval_status or "").upper() == "PENDING")
+            days = sum(absence.quantity_in_days or 0 for absence in records)
+            hours = sum(absence.quantity_in_hours or 0 for absence in records)
+            summary_rows.append(
+                "| {period} | {records} | {approved} | {pending} | {days} | {hours} |".format(
+                    period=period,
+                    records=len(records),
+                    approved=approved,
+                    pending=pending,
+                    days=self._format_number(days),
+                    hours=self._format_number(hours),
+                )
+            )
+            for absence in records:
+                detail_rows.append(
+                    "| {period} | {user_id} | {absence_type} | {start_date} | {end_date} | {status} | {days} |".format(
+                        period=period,
+                        user_id=self._escape_markdown_cell(absence.user_id or "Unknown user"),
+                        absence_type=self._escape_markdown_cell(absence.absence_type or "Absence"),
+                        start_date=self._escape_markdown_cell(absence.start_date or "n/a"),
+                        end_date=self._escape_markdown_cell(absence.end_date or "n/a"),
+                        status=self._escape_markdown_cell(absence.approval_status or "Status unavailable"),
+                        days=self._format_number(absence.quantity_in_days),
+                    )
+                )
+
+        lead = "I retrieved the absence records and compared the requested periods."
+        return "\n".join(
+            [
+                lead,
+                "",
+                "| Period | Records | Approved | Pending | Days | Hours |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+                *summary_rows,
+                "",
+                "| Period | User | Absence type | Start date | End date | Approval status | Days |",
+                "| --- | --- | --- | --- | --- | --- | ---: |",
+                *detail_rows,
+            ]
+        )
+
+    def _format_period_label(self, date_range: dict[str, str]) -> str:
+        start_date = date_range.get("startDate", "")
+        end_date = date_range.get("endDate", "")
+        if start_date[:4] == end_date[:4] and start_date.endswith("-01-01") and end_date.endswith("-12-31"):
+            return start_date[:4]
+        return f"{start_date} to {end_date}"
+
+    def _format_number(self, value: float | None) -> str:
+        if value is None:
+            return "n/a"
+        if value == 0:
+            return "0"
+        if float(value).is_integer():
+            return str(int(value))
+        return f"{value:g}"
+
+    def _escape_markdown_cell(self, value: str) -> str:
+        return value.replace("|", "\\|").replace("\n", " ").strip()
+
     async def _generate_answer(
         self,
         *,
@@ -616,6 +816,13 @@ class ChatOrchestrator:
         if result.status == "needs_clarification":
             return result.message
         if result.status == "error":
+            return result.message
+        return "This message is not an SAP absence request."
+
+    def _sap_result_to_error_message(self, result: SapAbsenceResult) -> str | None:
+        if result.status == "success":
+            return None
+        if result.status in {"needs_clarification", "error"}:
             return result.message
         return "This message is not an SAP absence request."
 

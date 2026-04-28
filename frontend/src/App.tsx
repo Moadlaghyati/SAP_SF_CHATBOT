@@ -15,7 +15,7 @@ import { ChatComposer } from "./components/ChatComposer";
 import { DemoUserSwitcher } from "./components/DemoUserSwitcher";
 import { MessageList } from "./components/MessageList";
 import { RequestHistory } from "./components/RequestHistory";
-import { SamplePrompts } from "./components/SamplePrompts";
+import { SamplePrompts, type PromptGroup } from "./components/SamplePrompts";
 import { StatusPill } from "./components/StatusPill";
 import { TracePanel } from "./components/TracePanel";
 import type {
@@ -29,18 +29,50 @@ import type {
   RequestListItem,
 } from "./types/api";
 
-const DEMO_PROMPTS = [
-  "hello",
-  "what can you do?",
-  "How many absences did Sara Bennani have between 2026-01-01 and 2026-03-31?",
-  "How many sick leaves did Sara Bennani have in Q1 2026?",
-  "List Sara Bennani's absences in March 2026.",
-  "How many absences did my direct report Ahmed have last month?",
-  "Show the absence breakdown by type for Yasmine in February 2026.",
-  "How many absences did Karim Ouali have in March 2026?",
-  "How many absences did Yasmine have in February 2026?",
-  "What is Sara Bennani's payroll amount?",
-];
+const ROLE_PROMPT_GROUPS: Record<DemoUserSummary["role"], PromptGroup[]> = {
+  employee: [
+    {
+      title: "My leave",
+      prompts: [
+        "Show my remaining leave",
+        "List my absences in March 2026.",
+        "How many sick leaves did I have in Q1 2026?",
+      ],
+    },
+    {
+      title: "Policy",
+      prompts: ["What can you do?", "Explain this authorization result"],
+    },
+  ],
+  manager: [
+    {
+      title: "Absence & Leave",
+      prompts: [
+        "How many absences did Sara Bennani have between 2026-01-01 and 2026-03-31?",
+        "How many absences did my direct report Ahmed have last month?",
+        "Show the absence breakdown by type for Yasmine in February 2026.",
+      ],
+    },
+    {
+      title: "Manager Actions",
+      prompts: ["Who is absent this week?", "Summarize employee access rights"],
+    },
+  ],
+  hr_admin: [
+    {
+      title: "HR Operations",
+      prompts: [
+        "How many absences did Yasmine have in February 2026?",
+        "Show the absence breakdown by type for Yasmine in February 2026.",
+        "How many absences did Karim Ouali have in March 2026?",
+      ],
+    },
+    {
+      title: "Compliance & Audit",
+      prompts: ["Explain this authorization result", "What is Sara Bennani's payroll amount?"],
+    },
+  ],
+};
 
 const ACTIVE_USER_STORAGE_KEY = "hr-ai-assistant-active-user";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -107,6 +139,38 @@ function buildBootstrapErrorMessage(
   const resourceLabel = failedAreas.length > 0 ? failedAreas.join(", ") : "backend data";
   const fallbackCopy = usingFallbackUsers ? " Built-in demo personas are shown for now." : "";
   return `Could not load ${resourceLabel} from ${API_BASE_URL}.${fallbackCopy} Start the backend over http://, not https://, then retry. Example: http://127.0.0.1:8001/api/health. Details: ${formatErrorMessage(error)}`;
+}
+
+function getAccessScopeLabel(user: DemoUserSummary | null): string {
+  if (!user) {
+    return "Loading access scope";
+  }
+
+  if (user.role === "hr_admin") {
+    return "All seeded employees";
+  }
+
+  if (user.role === "manager") {
+    return "Self and direct reports";
+  }
+
+  return "Own employee record";
+}
+
+function getLoadingStep(elapsedSeconds: number): string {
+  if (elapsedSeconds < 2) {
+    return "Checking permissions";
+  }
+
+  if (elapsedSeconds < 5) {
+    return "Querying HR data";
+  }
+
+  if (elapsedSeconds < 8) {
+    return "Generating answer locally";
+  }
+
+  return "Preparing audit trail";
 }
 
 function App() {
@@ -453,137 +517,180 @@ function App() {
   const activeUser = demoUsers.find((user) => user.user_id === activeUserId) ?? null;
   const effectiveLlmBackend = health?.llm_backend ?? localModelBackend ?? "unknown";
   const showOllamaModelControls = effectiveLlmBackend === "ollama";
+  const promptGroups = ROLE_PROMPT_GROUPS[activeUser?.role ?? "manager"];
+  const connectorStatus = health?.connector_backend ? `${health.connector_backend} connector` : "Connector pending";
+  const modelStatus = health?.llm_backend ? `${health.llm_backend} model` : "Model pending";
 
   return (
     <div className="app-shell">
-      <div className="background-orb background-orb--left" />
-      <div className="background-orb background-orb--right" />
-
-      <header className="hero">
-        <div>
-          <p className="hero__eyebrow">Local-only HR AI demo</p>
-          <h1>SuccessFactors HR Assistant MVP</h1>
-          <p className="hero__copy">
-            Deterministic orchestration, approved tools only, and no external AI inference.
-          </p>
+      <header className="top-bar">
+        <div className="product-mark">
+          <span className="product-mark__icon">HR</span>
+          <div>
+            <p>SAP SuccessFactors</p>
+            <h1>HR Assistant Cockpit</h1>
+          </div>
         </div>
-        <div className="hero__signals">
-          <StatusPill label={`Model inference: ${health?.model_inference ?? "local"}`} />
-          <StatusPill label={`External AI calls: ${health?.external_ai_calls ?? "none"}`} />
-          <StatusPill label={`Connector: ${health?.connector_backend ?? "mock"}`} />
+        <div className="top-bar__status">
+          <StatusPill label={health?.status === "ok" ? "Environment ready" : "Environment pending"} tone={health?.status === "ok" ? "success" : "running"} />
+          <StatusPill label={modelStatus} />
+          <StatusPill label={connectorStatus} />
+          <StatusPill label="Audit enabled" tone="success" />
+        </div>
+        <div className="active-user-chip">
+          <span>{activeUser?.display_name ?? "Loading user"}</span>
+          <strong>{activeUser?.role ?? "role"}</strong>
         </div>
       </header>
 
-      {bootstrapError ? <div className="banner banner--error">{bootstrapError}</div> : null}
+      {bootstrapError ? (
+        <section className="connection-banner">
+          <div>
+            <strong>Connection issue detected</strong>
+            <p>The assistant could not load every backend resource. Diagnostics are available in the inspector.</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => void loadBootstrap()}>
+            Retry
+          </button>
+        </section>
+      ) : null}
 
-      <main className="main-column">
-        <div className="top-row">
+      <main className="cockpit-layout">
+        <aside className="left-rail" aria-label="Assistant context">
           <DemoUserSwitcher
             users={demoUsers}
             activeUserId={activeUserId}
             onChange={(userId) => void handleUserChange(userId)}
             usingFallbackUsers={usingFallbackUsers}
           />
-          <section className="panel panel--compact trust-panel">
-            <div className="panel__header">
-              <h2>Current Access</h2>
-              <span className="panel__eyebrow">{activeUser?.role ?? "loading"}</span>
+
+          <section className="access-card">
+            <div className="section-heading">
+              <div>
+                <span className="section-kicker">Authorization</span>
+                <h2>Current access</h2>
+              </div>
+              <span className="status-badge status-badge--success">Authorized</span>
             </div>
-            <p className="trust-panel__headline">{activeUser?.display_name ?? "Loading user..."}</p>
-            <p className="muted-text">
-              Authorization is enforced in backend code before connector access. The model never sees SAP credentials.
-            </p>
-              <ul className="trust-list">
-                <li>Local model backend: {health?.llm_backend ?? "unknown"}</li>
-                <li>Configured local model: {health?.llm_model ?? "unknown"}</li>
-                <li>Selected connector: {health?.connector_backend ?? "mock"}</li>
-                <li>{usingFallbackUsers ? "Showing built-in demo personas until the backend responds." : "Live demo users are loaded from the backend."}</li>
-              </ul>
-              {showOllamaModelControls ? (
-                <div className="model-switcher">
-                  <label className="model-switcher__label" htmlFor="local-model-select">
-                    Installed local models
-                  </label>
-                  <div className="model-switcher__controls">
-                    <select
-                      id="local-model-select"
-                      className="select-input"
-                      value={activeLocalModel}
-                      onChange={(event) => setActiveLocalModel(event.target.value)}
-                      disabled={localModels.length === 0 || modelSwitching}
-                    >
-                      {localModels.map((model) => (
-                        <option key={model.name} value={model.name}>
-                          {model.name}
-                          {model.parameter_size ? ` - ${model.parameter_size}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => void handleModelSwitch()}
-                      disabled={!activeLocalModel || modelSwitching}
-                    >
-                      {modelSwitching ? "Switching..." : "Use model"}
-                    </button>
-                  </div>
-                  <p className="muted-text">
-                    Switching updates the active Ollama model for future requests without changing the approved tool flow.
-                  </p>
+            <div className="metric-grid">
+              <div className="metric-card">
+                <span>Scope</span>
+                <strong>{getAccessScopeLabel(activeUser)}</strong>
+              </div>
+              <div className="metric-card">
+                <span>Connector</span>
+                <strong>{health?.connector_backend ?? "mock"}</strong>
+              </div>
+              <div className="metric-card">
+                <span>Model</span>
+                <strong>{health?.llm_model ?? health?.llm_backend ?? "unknown"}</strong>
+              </div>
+              <div className="metric-card">
+                <span>External AI</span>
+                <strong>{health?.external_ai_calls ?? "none"}</strong>
+              </div>
+            </div>
+
+            {showOllamaModelControls ? (
+              <div className="model-switcher">
+                <label className="model-switcher__label" htmlFor="local-model-select">
+                  Installed local models
+                </label>
+                <div className="model-switcher__controls">
+                  <select
+                    id="local-model-select"
+                    className="select-input"
+                    value={activeLocalModel}
+                    onChange={(event) => setActiveLocalModel(event.target.value)}
+                    disabled={localModels.length === 0 || modelSwitching}
+                  >
+                    {localModels.map((model) => (
+                      <option key={model.name} value={model.name}>
+                        {model.name}
+                        {model.parameter_size ? ` - ${model.parameter_size}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void handleModelSwitch()}
+                    disabled={!activeLocalModel || modelSwitching}
+                  >
+                    {modelSwitching ? "Switching" : "Use"}
+                  </button>
                 </div>
-              ) : (
-                <p className="muted-text">
-                  Start the backend with <code>LLM_BACKEND=ollama</code> to enable runtime local model switching.
-                </p>
-              )}
-            </section>
-        </div>
+              </div>
+            ) : null}
+          </section>
 
-        <SamplePrompts prompts={DEMO_PROMPTS} onPick={setInputValue} />
-        <ChatComposer
-          value={inputValue}
-          onChange={setInputValue}
-          onSubmit={() => void handleSubmit()}
-          loading={loading}
-        />
-        <MessageList messages={messages} pendingElapsedSeconds={pendingElapsedSeconds} />
+          <SamplePrompts groups={promptGroups} onPick={setInputValue} />
+        </aside>
 
-        <section className="advanced-stack">
-          <details className="details-panel">
-            <summary className="details-panel__summary">
-              <span>Request History</span>
-              <span className="panel__eyebrow">{requestHistory.length} stored request(s)</span>
-            </summary>
-            <div className="details-panel__body">
-              <RequestHistory
-                items={requestHistory}
-                selectedRequestId={selectedRequest?.request_id ?? null}
-                onSelect={(requestId) => void handleSelectRequest(requestId)}
-              />
+        <section className="center-stage" aria-label="Chat workspace">
+          {loading ? (
+            <div className="progress-strip">
+              <span className="progress-dot" />
+              <span>{getLoadingStep(pendingElapsedSeconds)}...</span>
             </div>
-          </details>
-
-          <details className="details-panel">
-            <summary className="details-panel__summary">
-              <span>Trace & Debug</span>
-              <span className="panel__eyebrow">Expand when you want internals</span>
-            </summary>
-            <div className="details-panel__body">
-              <TracePanel trace={selectedRequest?.trace ?? null} request={selectedRequest} health={health} />
-            </div>
-          </details>
-
-          <details className="details-panel">
-            <summary className="details-panel__summary">
-              <span>Audit Trail</span>
-              <span className="panel__eyebrow">{auditRecords.length} audit record(s)</span>
-            </summary>
-            <div className="details-panel__body">
-              <AuditViewer records={auditRecords} />
-            </div>
-          </details>
+          ) : null}
+          <MessageList messages={messages} pendingElapsedSeconds={pendingElapsedSeconds} />
+          <ChatComposer
+            value={inputValue}
+            onChange={setInputValue}
+            onSubmit={() => void handleSubmit()}
+            loading={loading}
+          />
         </section>
+
+        <aside className="inspector-panel" aria-label="Request inspector">
+          <div className="inspector-panel__header">
+            <div>
+              <span className="section-kicker">Transparency</span>
+              <h2>Inspector</h2>
+            </div>
+            <span className="status-badge status-badge--neutral">{requestHistory.length} requests</span>
+          </div>
+
+          <details className="inspector-section" open>
+            <summary>Overview</summary>
+            <div className="inspector-facts">
+              <span>Intent</span>
+              <strong>{selectedRequest?.parsed_intent ?? "No request selected"}</strong>
+              <span>Authorization</span>
+              <strong>{selectedRequest?.authorization_outcome ?? "Pending"}</strong>
+              <span>Tool</span>
+              <strong>{selectedRequest?.tool_name ?? "No tool run"}</strong>
+              <span>Duration</span>
+              <strong>{selectedRequest?.duration_ms ? `${selectedRequest.duration_ms} ms` : "n/a"}</strong>
+            </div>
+          </details>
+
+          <details className="inspector-section">
+            <summary>Trace</summary>
+            <TracePanel trace={selectedRequest?.trace ?? null} request={selectedRequest} health={health} />
+          </details>
+
+          <details className="inspector-section">
+            <summary>History</summary>
+            <RequestHistory
+              items={requestHistory}
+              selectedRequestId={selectedRequest?.request_id ?? null}
+              selectedRequest={selectedRequest}
+              onSelect={(requestId) => void handleSelectRequest(requestId)}
+            />
+          </details>
+
+          <details className="inspector-section">
+            <summary>Audit</summary>
+            <AuditViewer records={auditRecords} />
+          </details>
+
+          <details className="inspector-section">
+            <summary>Developer diagnostics</summary>
+            <pre className="trace-json">{bootstrapError ?? "No active diagnostics."}</pre>
+          </details>
+        </aside>
       </main>
     </div>
   );

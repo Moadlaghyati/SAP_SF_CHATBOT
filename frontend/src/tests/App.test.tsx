@@ -41,9 +41,9 @@ describe("App", () => {
   it("renders sample prompts and trust indicators", async () => {
     render(<App />);
 
-    expect(await screen.findByText(/SuccessFactors HR Assistant MVP/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/Model inference: local/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/External AI calls: none/i).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/HR Assistant Cockpit/i)).toBeInTheDocument();
+    expect(screen.getByText(/Environment ready/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/External AI/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/How many absences did Sara Bennani have between 2026-01-01 and 2026-03-31/i)).toBeInTheDocument();
   });
 });
