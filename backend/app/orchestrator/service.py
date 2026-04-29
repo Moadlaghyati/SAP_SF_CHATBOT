@@ -7,7 +7,7 @@ from datetime import date
 from uuid import uuid4
 
 from app.agents.sap.absence_intent import detect_absence_intent
-from app.agents.sap.absence_schemas import SapAbsenceResult
+from app.agents.sap.absence_schemas import SapAbsenceResult, SapDepartmentOverlapResult
 from pydantic import ValidationError
 
 from app.audit.service import AuditService
@@ -34,6 +34,7 @@ class ChatOrchestrator:
         audit_service: AuditService,
         llm_client: LocalLLMClient,
         sap_absence_agent=None,
+        dept_overlap_agent=None,
     ):
         self._settings = settings
         self._authorization_service = authorization_service
@@ -42,6 +43,7 @@ class ChatOrchestrator:
         self._audit_service = audit_service
         self._llm_client = llm_client
         self._sap_absence_agent = sap_absence_agent
+        self._dept_overlap_agent = dept_overlap_agent
 
     async def handle_message(self, message: str, user_id: str) -> ChatResponse:
         request_id = f"req_{uuid4().hex[:12]}"
@@ -73,6 +75,46 @@ class ChatOrchestrator:
                 acting_user_role=context.user_role,
                 question=message,
             )
+
+            if self._dept_overlap_agent is not None:
+                self._record_step(trace, "dept_overlap_agent", "running", "Checking for department overlap intent.")
+                dept_result = await self._dept_overlap_agent.handle(
+                    message,
+                    step_recorder=lambda name, step_status, detail, data=None: self._record_step(
+                        trace, name, step_status, detail, data
+                    ),
+                )
+                if dept_result.handled:
+                    self._record_step(
+                        trace,
+                        "dept_overlap_agent",
+                        "completed" if dept_result.status == "success" else dept_result.status,
+                        "Department Overlap Agent returned a structured result.",
+                        {"result_status": dept_result.status},
+                    )
+                    parsed_question = self._dept_overlap_result_to_parsed_question(dept_result)
+                    trace.detected_intent = "department_overlap"
+                    trace.parsed_request = {"agent_result_status": dept_result.status}
+                    trace.tool_name = "dept_overlap_agent"
+                    trace.authorization_outcome = "not_applicable"
+                    trace.status = self._dept_overlap_result_to_request_status(dept_result)
+                    trace.minimized_result = self._minimize_dept_overlap_result(dept_result)
+                    status = trace.status  # type: ignore[assignment]
+                    authorization_outcome = trace.authorization_outcome
+                    answer = self._dept_overlap_result_to_answer(dept_result)
+                    return await self._finalize(
+                        trace=trace,
+                        request_id=request_id,
+                        answer=answer,
+                        parsed_question=parsed_question,
+                        tool_name=trace.tool_name,
+                        target_employee=None,
+                        authorization_outcome=authorization_outcome,
+                        status=status,
+                        started=started,
+                        message=message,
+                        context_user=context,
+                    )
 
             sap_absence_precheck = detect_absence_intent(message)
             self._record_step(
@@ -618,6 +660,65 @@ class ChatOrchestrator:
         if result.status == "error":
             return result.message
         return "This message is not an SAP absence request."
+
+    def _dept_overlap_result_to_request_status(self, result: SapDepartmentOverlapResult) -> RequestStatus:
+        if result.status == "success":
+            return "success"
+        if result.status == "needs_clarification":
+            return "clarification_required"
+        if result.status == "error":
+            return "unavailable"
+        return "unsupported"
+
+    def _dept_overlap_result_to_parsed_question(self, result: SapDepartmentOverlapResult) -> ParsedQuestion:
+        if result.status == "success":
+            employee_reference = (
+                result.target_employee.get("name") or result.target_employee.get("userId")
+                if result.target_employee else None
+            )
+            return ParsedQuestion(
+                intent="absence_list",
+                employee_reference=employee_reference,
+                start_date=date.fromisoformat(result.date_range["startDate"]),
+                end_date=date.fromisoformat(result.date_range["endDate"]),
+                needs_clarification=False,
+            )
+        if result.status == "needs_clarification":
+            return ParsedQuestion(
+                intent="absence_list",
+                needs_clarification=True,
+                clarification_reason=result.message,
+            )
+        return ParsedQuestion(intent="unsupported", needs_clarification=False)
+
+    def _dept_overlap_result_to_answer(self, result: SapDepartmentOverlapResult) -> str:
+        if result.status == "success":
+            return result.summary_text
+        if result.status == "needs_clarification":
+            return result.message
+        if result.status == "error":
+            return result.message
+        return "This message is not a department overlap request."
+
+    def _minimize_dept_overlap_result(self, result: SapDepartmentOverlapResult) -> dict:
+        minimized = asdict(result) if is_dataclass(result) else {}
+        if "absences" in minimized:
+            minimized["absence_count"] = len(minimized["absences"])
+            minimized["absences"] = [
+                {
+                    "user_id": item.get("user_id"),
+                    "start_date": item.get("start_date"),
+                    "end_date": item.get("end_date"),
+                    "absence_type": item.get("absence_type"),
+                    "approval_status": item.get("approval_status"),
+                    "quantity_in_days": item.get("quantity_in_days"),
+                    "quantity_in_hours": item.get("quantity_in_hours"),
+                    "external_code": item.get("external_code"),
+                }
+                for item in minimized["absences"]
+                if isinstance(item, dict)
+            ]
+        return minimized
 
     def _minimize_sap_absence_result(self, result: SapAbsenceResult) -> dict:
         if is_dataclass(result):

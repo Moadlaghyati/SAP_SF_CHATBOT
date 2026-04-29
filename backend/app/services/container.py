@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
+from app.agents.sap.department_overlap_agent import DepartmentOverlapAgent
 from app.agents.sap.sap_absence_agent import SapAbsenceAgent
 from app.agents.sap.sap_auth_service import SapAuthService
 from app.agents.sap.sap_success_factors_client import SapSuccessFactorsClient
@@ -45,7 +46,9 @@ class AppContainer:
         self.llm_client: LocalLLMClient = self._build_llm_client()
         self.sap_auth_service: SapAuthService | None = None
         self.sap_success_factors_client: SapSuccessFactorsClient | None = None
-        self.sap_absence_agent: SapAbsenceAgent | None = self._build_sap_absence_agent()
+        self.sap_absence_agent: SapAbsenceAgent | None = None
+        self.dept_overlap_agent: DepartmentOverlapAgent | None = None
+        self._build_sap_agents()
         self.authorization_service = AuthorizationService(self.demo_user_repository)
         self.audit_service = AuditService(self.audit_repository, RedactionService())
         self.tool_service = ToolService(self.connector, self.request_repository)
@@ -57,6 +60,7 @@ class AppContainer:
             audit_service=self.audit_service,
             llm_client=self.llm_client,
             sap_absence_agent=self.sap_absence_agent,
+            dept_overlap_agent=self.dept_overlap_agent,
         )
 
     def _build_connector(self) -> SuccessFactorsConnector:
@@ -69,17 +73,22 @@ class AppContainer:
             return MockLocalLLMClient()
         return OllamaClient(self.settings)
 
-    def _build_sap_absence_agent(self) -> SapAbsenceAgent | None:
+    def _build_sap_agents(self) -> None:
         if self.settings.connector_backend != "successfactors":
-            return None
+            return
         self.sap_auth_service = SapAuthService(self.settings)
         self.sap_success_factors_client = SapSuccessFactorsClient(
             settings=self.settings,
             auth_service=self.sap_auth_service,
         )
-        return SapAbsenceAgent(
+        provider = lambda: self.settings.demo_reference_date
+        self.sap_absence_agent = SapAbsenceAgent(
             client=self.sap_success_factors_client,
-            current_date_provider=lambda: self.settings.demo_reference_date,
+            current_date_provider=provider,
+        )
+        self.dept_overlap_agent = DepartmentOverlapAgent(
+            client=self.sap_success_factors_client,
+            current_date_provider=provider,
         )
 
     async def startup(self) -> None:

@@ -13,6 +13,8 @@ def normalize_employee_absences(payload: Any) -> list[EmployeeAbsence]:
     for item in results:
         if not isinstance(item, dict):
             continue
+        if _is_attendance_record(item):
+            continue
         normalized.append(
             EmployeeAbsence(
                 user_id=str(item.get("userId") or ""),
@@ -29,18 +31,38 @@ def normalize_employee_absences(payload: Any) -> list[EmployeeAbsence]:
     return normalized
 
 
+def _is_attendance_record(item: dict) -> bool:
+    # Use the expanded timeTypeNav classification when available
+    time_type_nav = item.get("timeTypeNav")
+    if isinstance(time_type_nav, dict):
+        classification = str(
+            time_type_nav.get("timeTypeClass")
+            or time_type_nav.get("classification")
+            or ""
+        ).upper()
+        if classification and ("ATTEND" in classification or classification == "WORK"):
+            return True
+
+    # Fallback: exclude known attendance codes by name when expand is not available
+    time_type_code = str(item.get("timeType") or "").upper()
+    known_attendance_codes = {"MA_WORK", "MA_ATTENDANCE", "MAR_WORK", "MAR_ATTENDANCE"}
+    return time_type_code in known_attendance_codes
+
+
 def format_absence_summary(
     *,
     user_id: str,
     start_date: str,
     end_date: str,
     absences: list[EmployeeAbsence],
+    employee_name: str | None = None,
 ) -> str:
+    label = employee_name if employee_name else f"user {user_id}"
     if not absences:
-        return f"No absence records were found for user {user_id} from {start_date} to {end_date}."
+        return f"No absence records were found for {label} from {start_date} to {end_date}."
 
     lines = [
-        f"Found {len(absences)} absence record{'s' if len(absences) != 1 else ''} for user {user_id} from {start_date} to {end_date}:"
+        f"Found {len(absences)} absence record{'s' if len(absences) != 1 else ''} for {label} from {start_date} to {end_date}:"
     ]
     for index, absence in enumerate(absences, start=1):
         absence_type = absence.absence_type or "Absence"

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm.cmd run *)",
+      "Bash(python -c \"from app.agents.sap.absence_extraction import extract_absence_retrieval_params; from datetime import date; r = extract_absence_retrieval_params\\('How many absences did Fouzi lekjaa have between 2026-01-01 and 2026-06-31?', current_date=date.today\\(\\)\\); print\\('missing:', r.missing_required_fields\\); print\\('message:', r.clarification_message\\)\")",
+      "Bash(python -c \"from app.agents.sap.absence_extraction import extract_absence_retrieval_params; from datetime import date; r = extract_absence_retrieval_params\\('How many absences did Fouzi lekjaa have between 2026-01-01 and 2026-03-31?', current_date=date.today\\(\\)\\); print\\('start:', r.start_date, 'end:', r.end_date, 'missing:', r.missing_required_fields\\)\")",
+      "Bash(python -c \"from app.agents.sap.absence_formatter import normalize_employee_absences; print\\('OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"from app.agents.sap.department_overlap_agent import DepartmentOverlapAgent, detect_department_overlap_intent; print\\('OK'\\)\")",
+      "Bash(python -m py_compile app/services/container.py app/orchestrator/service.py app/agents/sap/department_overlap_agent.py app/agents/sap/absence_schemas.py)"
+    ]
+  }
+}

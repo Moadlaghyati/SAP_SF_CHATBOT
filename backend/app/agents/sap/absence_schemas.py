@@ -22,6 +22,7 @@ class AbsenceRetrievalParams:
     year: int | None = None
     month: int | None = None
     missing_required_fields: list[str] = field(default_factory=list)
+    clarification_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,4 +79,49 @@ SapAbsenceResult = (
     | SapAbsenceClarificationResult
     | SapAbsenceErrorResult
     | SapAbsenceNotApplicableResult
+)
+
+
+@dataclass(frozen=True)
+class SapDepartmentOverlapSuccessResult:
+    handled: Literal[True]
+    type: Literal["department_overlap"]
+    status: Literal["success"]
+    target_employee: dict[str, str] | None
+    department: str
+    date_range: dict[str, str]
+    absences: list[EmployeeAbsence]
+    summary_text: str
+
+
+@dataclass(frozen=True)
+class SapDepartmentOverlapClarificationResult:
+    handled: Literal[True]
+    type: Literal["department_overlap"]
+    status: Literal["needs_clarification"]
+    message: str
+    missing_fields: list[str]
+
+
+@dataclass(frozen=True)
+class SapDepartmentOverlapErrorResult:
+    handled: Literal[True]
+    type: Literal["department_overlap"]
+    status: Literal["error"]
+    message: str
+    safe_error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class SapDepartmentOverlapNotApplicableResult:
+    handled: Literal[False]
+    type: Literal["department_overlap"]
+    status: Literal["not_applicable"]
+
+
+SapDepartmentOverlapResult = (
+    SapDepartmentOverlapSuccessResult
+    | SapDepartmentOverlapClarificationResult
+    | SapDepartmentOverlapErrorResult
+    | SapDepartmentOverlapNotApplicableResult
 )

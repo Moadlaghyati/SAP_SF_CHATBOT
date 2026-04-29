@@ -34,7 +34,10 @@ class SapSuccessFactorsClient:
             f"and startDate ge datetime'{start_date}T00:00:00' "
             f"and endDate le datetime'{end_date}T23:59:59'"
         )
-        query = urlencode({"$format": "json", "$filter": sap_filter}, quote_via=quote)
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$expand": "timeTypeNav"},
+            quote_via=quote,
+        )
         return f"{self._settings.sap_base_url.rstrip('/')}/EmployeeTime?{query}"
 
     def build_absences_url(self, *, start_date: str, end_date: str) -> str:
@@ -43,7 +46,10 @@ class SapSuccessFactorsClient:
             f"startDate le datetime'{end_date}T23:59:59' "
             f"and endDate ge datetime'{start_date}T00:00:00'"
         )
-        query = urlencode({"$format": "json", "$filter": sap_filter}, quote_via=quote)
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$expand": "timeTypeNav"},
+            quote_via=quote,
+        )
         return f"{self._settings.sap_base_url.rstrip('/')}/EmployeeTime?{query}"
 
     def build_user_lookup_url(self, *, first_name: str, last_name: str) -> str:
@@ -65,8 +71,56 @@ class SapSuccessFactorsClient:
         payload = await self._get_all_pages_json(url)
         return normalize_employee_absences(payload)
 
+    def build_employee_department_url(self, *, user_id: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"userId eq '{_escape_odata_string(user_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$orderby": "startDate desc", "$top": "1", "$select": "userId,department"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/EmpJob?{query}"
+
+    def build_department_employees_url(self, *, department: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"department eq '{_escape_odata_string(department)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$select": "userId,department"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/EmpJob?{query}"
+
+    async def get_employee_department(self, *, user_id: str) -> str | None:
+        url = self.build_employee_department_url(user_id=user_id)
+        try:
+            payload = await self._get_json(url)
+        except ConnectorUnavailableError:
+            return None
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list) or not results:
+            return None
+        dept = results[0].get("department")
+        return str(dept).strip() if dept else None
+
+    async def get_department_employees(self, *, department: str) -> list[str]:
+        url = self.build_department_employees_url(department=department)
+        try:
+            payload = await self._get_all_pages_json(url)
+        except ConnectorUnavailableError:
+            return []
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list):
+            return []
+        seen: set[str] = set()
+        user_ids: list[str] = []
+        for r in results:
+            uid = r.get("userId")
+            if uid and str(uid) not in seen:
+                seen.add(str(uid))
+                user_ids.append(str(uid))
+        return user_ids
+
     async def resolve_user_id_by_name(self, employee_name: str) -> str | None:
-        parts = employee_name.split()
+        parts = employee_name.title().split()
         if len(parts) < 2:
             return None
         first_name = parts[0]

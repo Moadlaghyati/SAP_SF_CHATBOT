@@ -76,7 +76,7 @@ class SapAbsenceAgent:
                 handled=True,
                 type="sap_absences",
                 status="needs_clarification",
-                message="Please provide an employee userId or a full employee name before I query SAP absences.",
+                message=params.clarification_message or "Please provide an employee userId or a full employee name before I query SAP absences.",
                 missing_fields=params.missing_required_fields,
             )
 
@@ -232,5 +232,6 @@ class SapAbsenceAgent:
                 start_date=params.start_date,
                 end_date=params.end_date,
                 absences=absences,
+                employee_name=params.employee_name,
             ),
         )

@@ -30,6 +30,17 @@ MONTH_LOOKUP.update(
 )
 
 
+def _safe_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _find_invalid_iso_dates(text: str) -> list[str]:
+    return [m for m in re.findall(r"\b\d{4}-\d{2}-\d{2}\b", text) if _safe_date(m) is None]
+
+
 def extract_absence_retrieval_params(
     message: str,
     *,
@@ -44,6 +55,25 @@ def extract_absence_retrieval_params(
     employee_name = None if user_id else _extract_employee_name(text)
 
     if start_date is None or end_date is None:
+        invalid_dates = _find_invalid_iso_dates(text)
+        if invalid_dates:
+            bad = invalid_dates[0]
+            return AbsenceRetrievalParams(
+                scope=scope,
+                employee_name=employee_name,
+                user_id=user_id,
+                start_date=None,
+                end_date=None,
+                year=None,
+                month=None,
+                raw_user_question=message,
+                missing_required_fields=["valid_date_range"],
+                clarification_message=(
+                    f"The date \"{bad}\" is not valid "
+                    f"(e.g. June only has 30 days, not 31). "
+                    f"Please correct the date and try again."
+                ),
+            )
         year = current_date.year
         start_date = date(year, 1, 1).isoformat()
         end_date = date(year, 12, 31).isoformat()
@@ -110,9 +140,11 @@ def _extract_date_range(text: str, *, current_date: date) -> tuple[str | None, s
         re.IGNORECASE,
     )
     if between_match:
-        start = date.fromisoformat(between_match.group(1))
-        end = date.fromisoformat(between_match.group(2))
-        return start.isoformat(), end.isoformat(), start.year, start.month if start.year == end.year else None
+        start = _safe_date(between_match.group(1))
+        end = _safe_date(between_match.group(2))
+        if start and end:
+            return start.isoformat(), end.isoformat(), start.year, start.month if start.year == end.year else None
+        return None, None, None, None
 
     from_to_match = re.search(
         r"\bfrom\s+(\d{4}-\d{2}-\d{2})\s+(?:to|until|through)\s+(\d{4}-\d{2}-\d{2})\b",
@@ -120,18 +152,24 @@ def _extract_date_range(text: str, *, current_date: date) -> tuple[str | None, s
         re.IGNORECASE,
     )
     if from_to_match:
-        start = date.fromisoformat(from_to_match.group(1))
-        end = date.fromisoformat(from_to_match.group(2))
-        return start.isoformat(), end.isoformat(), start.year, start.month if start.year == end.year else None
+        start = _safe_date(from_to_match.group(1))
+        end = _safe_date(from_to_match.group(2))
+        if start and end:
+            return start.isoformat(), end.isoformat(), start.year, start.month if start.year == end.year else None
+        return None, None, None, None
 
     iso_dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", text)
     if len(iso_dates) == 1:
-        single_day = date.fromisoformat(iso_dates[0])
-        return single_day.isoformat(), single_day.isoformat(), single_day.year, single_day.month
+        single_day = _safe_date(iso_dates[0])
+        if single_day:
+            return single_day.isoformat(), single_day.isoformat(), single_day.year, single_day.month
+        return None, None, None, None
     if len(iso_dates) >= 2:
-        start = date.fromisoformat(iso_dates[0])
-        end = date.fromisoformat(iso_dates[1])
-        return start.isoformat(), end.isoformat(), start.year, start.month if start.year == end.year else None
+        start = _safe_date(iso_dates[0])
+        end = _safe_date(iso_dates[1])
+        if start and end:
+            return start.isoformat(), end.isoformat(), start.year, start.month if start.year == end.year else None
+        return None, None, None, None
 
     if "this year" in lowered:
         return _year_range(current_date.year)
@@ -184,10 +222,11 @@ def _month_range(year: int, month: int) -> tuple[str, str, int, int]:
 
 def _extract_employee_name(text: str) -> str | None:
     patterns = [
-        r"\bfor\s+([A-Z][A-Za-z' -]+?)\s+(?:between|from|in|this year|last year|last month|$)",
-        r"\b(?:do|did)\s+([A-Z][A-Za-z' -]+?)\s+(?:have|had)\b",
-        r"\b(?:absences?|leaves?|pto|vacation|time off|sick leave)\s+for\s+([A-Z][A-Za-z' -]+?)\s*(?:between|from|in|this year|last year|last month|$)",
-        r"\b([A-Z][A-Za-z' -]+\s+[A-Z][A-Za-z' -]+)\s+(?:absences?|leaves?|pto|vacation|time off)",
+        r"\bfor\s+([A-Za-z][A-Za-z' -]+?)\s+(?:between|from|in|this year|last year|last month|$)",
+        r"\b(?:do|did)\s+([A-Za-z][A-Za-z' -]+?)\s+(?:have|had)\b",
+        r"\b(?:absences?|leaves?|pto|vacation|time off|sick leave)\s+for\s+([A-Za-z][A-Za-z' -]+?)\s*(?:between|from|in|this year|last year|last month|$)",
+        r"\b([A-Za-z][A-Za-z' -]+\s+[A-Za-z][A-Za-z' -]+)\s+(?:absences?|leaves?|pto|vacation|time off)",
+        r"\bin\s+([A-Za-z][A-Za-z' -]+?)(?:'s)?\s+(?:department|team|group)\b",
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -198,9 +237,21 @@ def _extract_employee_name(text: str) -> str | None:
     return None
 
 
+_NAME_STOPWORDS = frozenset({
+    "list", "show", "get", "find", "fetch", "display", "tell",
+    "give", "check", "search", "view", "see", "how", "many",
+    "what", "which", "who", "when", "where", "all", "me",
+})
+
+
 def _clean_name(value: str) -> str | None:
     cleaned = re.sub(r"\b(user|employee)\b", "", value, flags=re.IGNORECASE).strip(" '\"?.")
     cleaned = re.sub(r"\s+", " ", cleaned)
-    if not cleaned or re.search(r"\d", cleaned):
+    # Strip leading command/query words that leaked from the sentence structure
+    words = cleaned.split()
+    while words and words[0].lower() in _NAME_STOPWORDS:
+        words = words[1:]
+    cleaned = " ".join(words)
+    if len(cleaned) < 2 or re.search(r"\d", cleaned):
         return None
-    return cleaned
+    return cleaned.title()

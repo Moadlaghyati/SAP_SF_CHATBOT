@@ -146,4 +146,5 @@ export interface ChatMessage {
   status?: RequestStatus;
   requestId?: string;
   pending?: boolean;
+  minimizedResult?: Record<string, unknown> | null;
 }

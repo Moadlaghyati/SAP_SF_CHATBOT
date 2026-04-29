@@ -1,3 +1,5 @@
+import type { KeyboardEvent } from "react";
+
 interface ChatComposerProps {
   value: string;
   onChange: (value: string) => void;
@@ -6,25 +8,35 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({ value, onChange, onSubmit, loading }: ChatComposerProps) {
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!loading && value.trim()) {
+        onSubmit();
+      }
+    }
+  }
+
   return (
-    <section className="panel composer">
-      <div className="panel__header">
-        <h2>Ask the Assistant</h2>
-        <span className="panel__eyebrow">Natural language in, strict tools out</span>
-      </div>
+    <div className="inline-composer">
       <textarea
-        className="composer__input"
+        className="inline-composer__input"
         value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder="Say hello, ask what the assistant can do, or ask about absences, date ranges, and breakdowns..."
-        rows={4}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder="Ask about absences, time off, or say hello..."
+        rows={1}
+        disabled={loading}
       />
-      <div className="composer__actions">
-        <span className="muted-text">Only approved internal tools can access employee data.</span>
-        <button className="primary-button" type="button" onClick={onSubmit} disabled={loading}>
-          {loading ? "Waiting for local model..." : "Send"}
-        </button>
-      </div>
-    </section>
+      <button
+        className="inline-composer__send"
+        type="button"
+        onClick={onSubmit}
+        disabled={loading || !value.trim()}
+        title="Send"
+      >
+        {loading ? "⏳" : "➤"}
+      </button>
+    </div>
   );
 }

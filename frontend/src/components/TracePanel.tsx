@@ -22,7 +22,7 @@ function ProcessSteps({ steps }: { steps: ToolTrace["process_steps"] | undefined
         <li className="process-step" key={`${step.step}-${index}`}>
           <div className="process-step__header">
             <span className="process-step__name">{step.step}</span>
-            <StatusPill label={step.status} tone={step.status} />
+            <StatusPill label={step.status} tone={step.status as never} />
           </div>
           <p>{step.detail}</p>
           {Object.keys(step.data ?? {}).length > 0 ? <JsonBlock value={step.data} /> : null}
