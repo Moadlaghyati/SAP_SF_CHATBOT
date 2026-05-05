@@ -32,10 +32,12 @@ class SapSuccessFactorsClient:
 
     def build_employee_absences_url(self, *, user_id: str, start_date: str, end_date: str) -> str:
         self._ensure_base_url()
+        # Overlap filter: returns absences that overlap the requested period,
+        # including ones that start before or end after the range boundaries.
         sap_filter = (
             f"userId eq '{_escape_odata_string(user_id)}' "
-            f"and startDate ge datetime'{start_date}T00:00:00' "
-            f"and endDate le datetime'{end_date}T23:59:59'"
+            f"and startDate le datetime'{end_date}T23:59:59' "
+            f"and endDate ge datetime'{start_date}T00:00:00'"
         )
         query = urlencode(
             {"$format": "json", "$filter": sap_filter, "$expand": "timeTypeNav"},
@@ -285,6 +287,29 @@ class SapSuccessFactorsClient:
         user_id = results[0].get("userId")
         LOGGER.debug("[SAP] resolve_user_id_by_person_id person_id=%s -> userId=%s", person_id, user_id)
         return str(user_id) if user_id else None
+
+    def build_all_users_url(self) -> str:
+        self._ensure_base_url()
+        query = urlencode(
+            {"$format": "json", "$select": "userId,firstName,lastName"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/User?{query}"
+
+    async def fetch_all_user_ids(self) -> list[str]:
+        url = self.build_all_users_url()
+        LOGGER.info("[SAP] fetch_all_user_ids fetching all SAP users from %s", url)
+        try:
+            payload = await self._get_all_pages_json(url)
+        except ConnectorUnavailableError as exc:
+            LOGGER.warning("[SAP] fetch_all_user_ids failed: %s", exc)
+            return []
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list):
+            return []
+        user_ids = [str(r["userId"]) for r in results if isinstance(r, dict) and r.get("userId")]
+        LOGGER.info("[SAP] fetch_all_user_ids resolved %d SAP users", len(user_ids))
+        return user_ids
 
     async def verify_user_id_exists(self, user_id: str) -> bool:
         """Return True if user_id is a valid SAP userId in the User entity."""

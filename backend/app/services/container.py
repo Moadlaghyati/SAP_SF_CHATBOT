@@ -51,6 +51,8 @@ class AppContainer:
         self.dept_overlap_agent: DepartmentOverlapAgent | None = None
         # Populated at startup: maps mock employee_id -> real SAP userId
         self.sap_employee_id_map: dict[str, str] = {}
+        # Populated at startup: all SAP user IDs fetched from the User entity
+        self.sap_all_user_ids: list[str] = []
         self._build_sap_agents()
         self.authorization_service = AuthorizationService(self.demo_user_repository)
         self.audit_service = AuditService(self.audit_repository, RedactionService())
@@ -65,6 +67,7 @@ class AppContainer:
             sap_absence_agent=self.sap_absence_agent,
             dept_overlap_agent=self.dept_overlap_agent,
             sap_employee_id_map=self.sap_employee_id_map,
+            sap_all_user_ids=self.sap_all_user_ids,
         )
 
     def _build_connector(self) -> SuccessFactorsConnector:
@@ -106,7 +109,9 @@ class AppContainer:
         self.demo_user_repository.seed(DEMO_USERS, DEMO_ACCESS_MAP)
         if self.settings.connector_backend == "successfactors" and self.sap_success_factors_client:
             await self._resolve_sap_employee_ids()
-        LOGGER.info("Application container started with connector=%s llm=%s", self.connector.backend_name, self.llm_client.backend_name)
+            fetched = await self.sap_success_factors_client.fetch_all_user_ids()
+            self.sap_all_user_ids.extend(fetched)
+        LOGGER.info("Application container started with connector=%s llm=%s sap_users=%d", self.connector.backend_name, self.llm_client.backend_name, len(self.sap_all_user_ids))
 
     async def _resolve_sap_employee_ids(self) -> None:
         """Resolve all demo employee names to their real SAP userIds at startup."""

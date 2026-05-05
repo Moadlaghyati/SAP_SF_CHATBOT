@@ -37,6 +37,7 @@ class ChatOrchestrator:
         sap_absence_agent=None,
         dept_overlap_agent=None,
         sap_employee_id_map: dict[str, str] | None = None,
+        sap_all_user_ids: list[str] | None = None,
     ):
         self._settings = settings
         self._authorization_service = authorization_service
@@ -48,6 +49,8 @@ class ChatOrchestrator:
         self._dept_overlap_agent = dept_overlap_agent
         # Shared reference to the container's map — populated at startup
         self._sap_employee_id_map: dict[str, str] = sap_employee_id_map if sap_employee_id_map is not None else {}
+        # All SAP user IDs fetched at startup — used for workforce queries
+        self._sap_all_user_ids: list[str] = sap_all_user_ids if sap_all_user_ids is not None else []
 
     async def handle_message(self, message: str, user_id: str) -> ChatResponse:
         request_id = f"req_{uuid4().hex[:12]}"
@@ -165,6 +168,7 @@ class ChatOrchestrator:
                     acting_user_display_name=context.user_display_name,
                     allowed_employee_ids=[self._resolve_sap_id(eid) for eid in context.allowed_employee_ids] or None,
                     local_name_to_id=local_name_to_id,
+                    all_sap_user_ids=self._sap_all_user_ids or None,
                 )
                 if result.handled:
                     self._record_step(

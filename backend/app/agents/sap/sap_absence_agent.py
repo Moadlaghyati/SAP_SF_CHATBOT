@@ -47,16 +47,29 @@ class SapAbsenceAgent:
                     return None
                 return val
 
+            employee_name = _clean(result.employee_name)
+            employee_name_b = _clean(result.employee_name_b)
+            user_id = _clean(result.user_id)
+
+            # Never trust the LLM's clarification for dates — we always apply defaults.
+            # Only ask for clarification when scope is specific_employee and no employee can be identified.
+            needs_clarification = (
+                scope == "specific_employee"
+                and not employee_name
+                and not user_id
+            )
+            clarification_message = result.clarification_message if needs_clarification else None
+
             return AbsenceRetrievalParams(
                 raw_user_question=message,
                 scope=scope,  # type: ignore[arg-type]
-                employee_name=_clean(result.employee_name),
-                employee_name_b=_clean(result.employee_name_b),
-                user_id=_clean(result.user_id),
+                employee_name=employee_name,
+                employee_name_b=employee_name_b,
+                user_id=user_id,
                 start_date=start_date,
                 end_date=end_date,
-                missing_required_fields=["employee_identifier"] if result.needs_clarification else [],
-                clarification_message=result.clarification_message,
+                missing_required_fields=["employee_identifier"] if needs_clarification else [],
+                clarification_message=clarification_message,
             )
         return extract_absence_retrieval_params(message, current_date=current_date)
 
@@ -90,6 +103,7 @@ class SapAbsenceAgent:
         acting_user_display_name: str | None = None,
         allowed_employee_ids: list[str] | None = None,
         local_name_to_id: dict[str, str] | None = None,
+        all_sap_user_ids: list[str] | None = None,
     ) -> SapAbsenceResult:
         def record(step: str, status: str, detail: str, data: dict[str, Any] | None = None) -> None:
             if step_recorder is not None:
@@ -376,7 +390,6 @@ class SapAbsenceAgent:
             assert params.end_date is not None
 
             if allowed_employee_ids:
-                # Fetch only for the known/authorised employee set (e.g. FRMF members)
                 record(
                     "sap_absence_query",
                     "running",
