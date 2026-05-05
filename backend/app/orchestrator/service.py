@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from app.agents.sap.absence_intent import detect_absence_intent
 from app.agents.sap.absence_schemas import SapAbsenceResult, SapDepartmentOverlapResult
+from app.connectors.mock_data import MOCK_EMPLOYEES
 from pydantic import ValidationError
 
 from app.audit.service import AuditService
@@ -35,6 +36,7 @@ class ChatOrchestrator:
         llm_client: LocalLLMClient,
         sap_absence_agent=None,
         dept_overlap_agent=None,
+        sap_employee_id_map: dict[str, str] | None = None,
     ):
         self._settings = settings
         self._authorization_service = authorization_service
@@ -44,6 +46,8 @@ class ChatOrchestrator:
         self._llm_client = llm_client
         self._sap_absence_agent = sap_absence_agent
         self._dept_overlap_agent = dept_overlap_agent
+        # Shared reference to the container's map — populated at startup
+        self._sap_employee_id_map: dict[str, str] = sap_employee_id_map if sap_employee_id_map is not None else {}
 
     async def handle_message(self, message: str, user_id: str) -> ChatResponse:
         request_id = f"req_{uuid4().hex[:12]}"
@@ -101,7 +105,18 @@ class ChatOrchestrator:
                     trace.minimized_result = self._minimize_dept_overlap_result(dept_result)
                     status = trace.status  # type: ignore[assignment]
                     authorization_outcome = trace.authorization_outcome
-                    answer = self._dept_overlap_result_to_answer(dept_result)
+                    if dept_result.status == "success":
+                        answer = await self._generate_answer(
+                            parsed_question=parsed_question,
+                            status=status,
+                            employee=None,
+                            result=self._minimize_dept_overlap_result(dept_result),
+                            error_message=None,
+                            clarification_options=[],
+                            user_message=message,
+                        )
+                    else:
+                        answer = self._dept_overlap_result_to_answer(dept_result)
                     return await self._finalize(
                         trace=trace,
                         request_id=request_id,
@@ -131,11 +146,25 @@ class ChatOrchestrator:
             )
             if self._sap_absence_agent is not None and sap_absence_precheck.should_handle:
                 self._record_step(trace, "sap_absence_agent", "running", "Delegated request to the dedicated SAP Absence Agent.")
+                if self._settings.connector_backend == "successfactors":
+                    # Use real SAP userIds resolved at startup; fall back to the
+                    # mock employee_id for any employee whose name didn't match in
+                    # the SAP User entity (e.g. different name casing or spelling).
+                    local_name_to_id = {
+                        e.display_name.lower(): self._sap_employee_id_map.get(e.employee_id, e.employee_id)
+                        for e in MOCK_EMPLOYEES
+                    }
+                else:
+                    local_name_to_id = {e.display_name.lower(): e.employee_id for e in MOCK_EMPLOYEES}
                 result = await self._sap_absence_agent.handle(
                     message,
                     step_recorder=lambda name, step_status, detail, data=None: self._record_step(
                         trace, name, step_status, detail, data
                     ),
+                    acting_sap_user_id=self._resolve_sap_id(context.employee_id) or self._settings.sap_acting_user_id,
+                    acting_user_display_name=context.user_display_name,
+                    allowed_employee_ids=[self._resolve_sap_id(eid) for eid in context.allowed_employee_ids] or None,
+                    local_name_to_id=local_name_to_id,
                 )
                 if result.handled:
                     self._record_step(
@@ -157,7 +186,18 @@ class ChatOrchestrator:
                     trace.minimized_result = self._minimize_sap_absence_result(result)
                     status = trace.status  # type: ignore[assignment]
                     authorization_outcome = trace.authorization_outcome
-                    answer = self._sap_result_to_answer(result)
+                    if result.status == "success":
+                        answer = await self._generate_answer(
+                            parsed_question=parsed_question,
+                            status=status,
+                            employee=None,
+                            result=self._minimize_sap_absence_result(result),
+                            error_message=None,
+                            clarification_options=[],
+                            user_message=message,
+                        )
+                    else:
+                        answer = self._sap_result_to_answer(result)
                     return await self._finalize(
                         trace=trace,
                         request_id=request_id,
@@ -578,6 +618,12 @@ class ChatOrchestrator:
             error_message=error_message,
         )
         return await self._llm_client.generate_answer(payload)
+
+    def _resolve_sap_id(self, mock_id: str | None) -> str | None:
+        """Translate a mock employee_id to the real SAP userId, falling back to the mock id."""
+        if not mock_id:
+            return None
+        return self._sap_employee_id_map.get(mock_id, mock_id)
 
     def _should_route_to_general_chat(self, message: str) -> bool:
         lowered = message.lower()

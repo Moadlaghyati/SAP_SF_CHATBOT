@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     sap_base_url: str | None = None
     sap_company_id: str | None = None
     sap_oauth_token_url: str | None = None
+    sap_acting_user_id: str | None = None  # SAP userId of the logged-in user (for "my absences" / "my team" queries)
     sap_auth_mode: str = "basic"
     sap_username: str | None = None
     sap_password: str | None = None

@@ -161,6 +161,7 @@ button, textarea, select { font: inherit; }
   display: flex;
   flex-direction: column;
   gap: 2px;
+  position: relative;
 }
 
 .sidebar__user {
@@ -170,6 +171,115 @@ button, textarea, select { font: inherit; }
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+
+.sidebar__user--toggle {
+  width: 100%;
+  border: none;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-sm);
+  transition: background 160ms;
+}
+
+.sidebar__user--toggle:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.sidebar__user--toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.user-chevron {
+  margin-left: auto;
+  font-size: 0.6rem;
+  color: var(--sidebar-muted);
+  flex-shrink: 0;
+}
+
+/* ── User switcher menu ─────────────────────────────── */
+.user-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 10px;
+  right: 10px;
+  background: #13132a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  max-height: 340px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.user-menu-item:last-child {
+  border-bottom: none;
+}
+
+.user-menu-item:hover {
+  background: rgba(124, 58, 237, 0.15);
+}
+
+.user-menu-item--active {
+  background: rgba(124, 58, 237, 0.2);
+}
+
+.user-menu-item__avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+
+.user-menu-item__info {
+  min-width: 0;
+  flex: 1;
+}
+
+.user-menu-item__name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-menu-item__title {
+  font-size: 0.68rem;
+  color: var(--sidebar-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-menu-item__check {
+  font-size: 0.75rem;
+  color: var(--sidebar-active-text);
+  flex-shrink: 0;
 }
 
 .user-avatar {
@@ -823,6 +933,79 @@ button, textarea, select { font: inherit; }
   font-size: 0.9rem;
   color: var(--ink);
   line-height: 1.5;
+}
+
+/* ── Comparison cards ───────────────────────────────── */
+.comparison-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 12px 0 4px;
+}
+
+.comparison-card {
+  border: 1px solid rgba(124, 58, 237, 0.18);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  background: rgba(124, 58, 237, 0.04);
+}
+
+.comparison-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.comparison-card__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+
+.comparison-card__name {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+
+.comparison-card__sub {
+  font-size: 0.75rem;
+  color: var(--accent-strong);
+  font-weight: 600;
+  margin-top: 1px;
+}
+
+.comparison-card__breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-top: 1px solid rgba(124, 58, 237, 0.1);
+  padding-top: 8px;
+}
+
+.comparison-card__type-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+}
+
+.comparison-card__type-label {
+  color: var(--muted);
+}
+
+.comparison-card__type-val {
+  font-weight: 600;
+  color: var(--ink);
 }
 
 /* ── Download button in message ─────────────────────── */

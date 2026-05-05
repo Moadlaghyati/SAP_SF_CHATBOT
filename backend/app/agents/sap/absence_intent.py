@@ -6,6 +6,10 @@ from app.agents.sap.absence_schemas import AbsenceIntentResult
 
 
 ABSENCE_PATTERNS: tuple[tuple[str, float], ...] = (
+    (r"\bcompare\b.*\babsences?\b", 0.98),
+    (r"\babsences?\b.*\bcompare\b", 0.98),
+    (r"\bcompare\b.*\bleaves?\b", 0.98),
+    (r"\babsence\s+patterns?\b", 0.98),
     (r"\babsences?\b", 0.95),
     (r"\babsent\b", 0.95),
     (r"\bleaves?\b", 0.9),

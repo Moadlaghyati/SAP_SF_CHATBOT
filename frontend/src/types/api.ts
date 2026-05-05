@@ -12,6 +12,7 @@ export interface DemoUserSummary {
   user_id: string;
   display_name: string;
   role: "employee" | "manager" | "hr_admin";
+  job_title?: string;
   employee_id: string | null;
   description: string;
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -8,6 +9,8 @@ from app.agents.sap.absence_formatter import normalize_employee_absences
 from app.agents.sap.absence_schemas import EmployeeAbsence
 from app.config.settings import Settings
 from app.services.errors import ConnectorUnavailableError
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SapSuccessFactorsClient:
@@ -63,8 +66,17 @@ class SapSuccessFactorsClient:
 
     async def get_employee_absences(self, *, user_id: str, start_date: str, end_date: str) -> list[EmployeeAbsence]:
         url = self.build_employee_absences_url(user_id=user_id, start_date=start_date, end_date=end_date)
+        LOGGER.debug("[SAP] get_employee_absences url=%s", url)
         payload = await self._get_all_pages_json(url)
-        return normalize_employee_absences(payload)
+        raw_results = payload.get("d", {}).get("results", [])
+        LOGGER.debug("[SAP] get_employee_absences raw_record_count=%d user_id=%s", len(raw_results), user_id)
+        for i, r in enumerate(raw_results[:5]):
+            LOGGER.debug("[SAP] raw[%d] timeType=%s startDate=%s endDate=%s timeTypeNav=%s",
+                        i, r.get("timeType"), r.get("startDate"), r.get("endDate"),
+                        r.get("timeTypeNav"))
+        normalized = normalize_employee_absences(payload)
+        LOGGER.debug("[SAP] get_employee_absences normalized_count=%d", len(normalized))
+        return normalized
 
     async def get_absences(self, *, start_date: str, end_date: str) -> list[EmployeeAbsence]:
         url = self.build_absences_url(start_date=start_date, end_date=end_date)
@@ -119,6 +131,118 @@ class SapSuccessFactorsClient:
                 user_ids.append(str(uid))
         return user_ids
 
+    def build_direct_reports_url(self, *, manager_user_id: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"managerId eq '{_escape_odata_string(manager_user_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$select": "userId,managerId,startDate,endDate"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/EmpJob?{query}"
+
+    async def _resolve_manager_sap_user_id(self, numeric_id: str, display_name: str | None) -> str:
+        """Convert a numeric employee ID to the alphanumeric SAP userId used in EmpJob.managerId."""
+        # Check if numeric_id is already a valid userId in the User entity
+        try:
+            url = self.build_user_by_id_url(user_id=numeric_id)
+            payload = await self._get_json(url)
+            results = payload.get("d", {}).get("results", [])
+            if isinstance(results, list) and results:
+                return numeric_id  # numeric ID is the SAP userId — use as-is
+        except Exception:
+            pass
+
+        # Numeric ID not found in User entity — resolve via full name
+        if display_name:
+            try:
+                resolved = await self.resolve_user_id_by_name(display_name)
+                if resolved:
+                    return resolved
+            except Exception:
+                pass
+
+        return numeric_id  # best-effort fallback
+
+    async def get_direct_report_user_ids(
+        self, *, manager_user_id: str, manager_display_name: str | None = None
+    ) -> list[str]:
+        resolved_id = await self._resolve_manager_sap_user_id(manager_user_id, manager_display_name)
+        url = self.build_direct_reports_url(manager_user_id=resolved_id)
+        try:
+            payload = await self._get_all_pages_json(url)
+        except ConnectorUnavailableError:
+            return []
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list):
+            return []
+        seen: set[str] = set()
+        user_ids: list[str] = []
+        for r in results:
+            uid = r.get("userId")
+            if uid and str(uid) not in seen:
+                seen.add(str(uid))
+                user_ids.append(str(uid))
+        return user_ids
+
+    def build_user_by_id_url(self, *, user_id: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"userId eq '{_escape_odata_string(user_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$select": "userId,firstName,lastName"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/User?{query}"
+
+    def build_per_personal_url(self, *, person_id: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"personIdExternal eq '{_escape_odata_string(person_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$select": "personIdExternal,firstName,lastName", "$top": "1"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/PerPersonal?{query}"
+
+    async def _resolve_one_display_name(self, user_id: str) -> str | None:
+        # Try User entity first
+        url = self.build_user_by_id_url(user_id=user_id)
+        try:
+            payload = await self._get_json(url)
+            results = payload.get("d", {}).get("results", [])
+            if isinstance(results, list) and results and isinstance(results[0], dict):
+                first = str(results[0].get("firstName") or "").strip()
+                last = str(results[0].get("lastName") or "").strip()
+                display = f"{first} {last}".strip()
+                if display:
+                    return display
+        except Exception:
+            pass
+
+        # Fallback: PerPersonal entity (handles numeric personIdExternal IDs)
+        url = self.build_per_personal_url(person_id=user_id)
+        try:
+            payload = await self._get_json(url)
+            results = payload.get("d", {}).get("results", [])
+            if isinstance(results, list) and results and isinstance(results[0], dict):
+                first = str(results[0].get("firstName") or "").strip()
+                last = str(results[0].get("lastName") or "").strip()
+                display = f"{first} {last}".strip()
+                if display:
+                    return display
+        except Exception:
+            pass
+
+        return None
+
+    async def get_display_names_for_user_ids(self, user_ids: list[str]) -> dict[str, str]:
+        if not user_ids:
+            return {}
+        names: dict[str, str] = {}
+        for uid in user_ids:
+            display = await self._resolve_one_display_name(uid)
+            if display:
+                names[uid] = display
+        return names
+
     async def resolve_user_id_by_name(self, employee_name: str) -> str | None:
         parts = employee_name.title().split()
         if len(parts) < 2:
@@ -126,12 +250,54 @@ class SapSuccessFactorsClient:
         first_name = parts[0]
         last_name = " ".join(parts[1:])
         url = self.build_user_lookup_url(first_name=first_name, last_name=last_name)
+        LOGGER.debug("[SAP] resolve_user_id_by_name name=%r url=%s", employee_name, url)
         payload = await self._get_json(url)
         results = payload.get("d", {}).get("results", []) if isinstance(payload, dict) else []
+        LOGGER.debug("[SAP] resolve_user_id_by_name name=%r result_count=%d results=%s",
+                    employee_name, len(results) if isinstance(results, list) else -1,
+                    [r.get("userId") for r in results if isinstance(r, dict)][:5])
         if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
             return None
         user_id = results[0].get("userId")
+        LOGGER.debug("[SAP] resolve_user_id_by_name name=%r resolved_user_id=%s", employee_name, user_id)
         return str(user_id) if user_id else None
+
+    def build_emp_job_by_person_id_url(self, *, person_id: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"personIdExternal eq '{_escape_odata_string(person_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$select": "userId,personIdExternal", "$top": "1"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/EmpJob?{query}"
+
+    async def resolve_user_id_by_person_id(self, *, person_id: str) -> str | None:
+        """Look up the SAP userId from a numeric personIdExternal via EmpJob."""
+        url = self.build_emp_job_by_person_id_url(person_id=person_id)
+        LOGGER.debug("[SAP] resolve_user_id_by_person_id person_id=%s url=%s", person_id, url)
+        try:
+            payload = await self._get_json(url)
+        except ConnectorUnavailableError:
+            return None
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            return None
+        user_id = results[0].get("userId")
+        LOGGER.debug("[SAP] resolve_user_id_by_person_id person_id=%s -> userId=%s", person_id, user_id)
+        return str(user_id) if user_id else None
+
+    async def verify_user_id_exists(self, user_id: str) -> bool:
+        """Return True if user_id is a valid SAP userId in the User entity."""
+        url = self.build_user_by_id_url(user_id=user_id)
+        LOGGER.debug("[SAP] verify_user_id_exists user_id=%s url=%s", user_id, url)
+        try:
+            payload = await self._get_json(url)
+            results = payload.get("d", {}).get("results", [])
+            exists = isinstance(results, list) and len(results) > 0
+            LOGGER.debug("[SAP] verify_user_id_exists user_id=%s exists=%s", user_id, exists)
+            return exists
+        except Exception:
+            return False
 
     async def _get_json(self, url: str) -> dict:
         token = await self._auth_service.get_access_token()

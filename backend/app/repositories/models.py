@@ -15,6 +15,7 @@ class DemoUserORM(Base):
     user_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False)
+    job_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     employee_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str] = mapped_column(String(255), nullable=False)
 

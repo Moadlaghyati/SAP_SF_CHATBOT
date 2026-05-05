@@ -85,6 +85,7 @@ interface AbsenceData {
   isWorkforce: boolean;
   department: string | null;
   isDepartmentOverlap: boolean;
+  memberNames: Record<string, string>;
 }
 
 function extractAbsenceData(message: ChatMessage): AbsenceData | null {
@@ -99,6 +100,7 @@ function extractAbsenceData(message: ChatMessage): AbsenceData | null {
   if (resultType === "department_overlap") {
     const targetEmployee = message.minimizedResult.target_employee as Record<string, string> | null | undefined;
     const dateRange = message.minimizedResult.date_range as Record<string, string> | undefined;
+    const memberNames = (message.minimizedResult.member_names as Record<string, string> | null) ?? {};
     return {
       absences: absences as AbsenceRow[],
       employeeName: targetEmployee?.name ?? targetEmployee?.userId ?? null,
@@ -107,11 +109,14 @@ function extractAbsenceData(message: ChatMessage): AbsenceData | null {
       isWorkforce: true,
       department: (message.minimizedResult.department as string | null) ?? null,
       isDepartmentOverlap: true,
+      memberNames,
     };
   }
 
   const employee = message.minimizedResult.employee as Record<string, string> | null | undefined;
   const dateRange = message.minimizedResult.date_range as Record<string, string> | undefined;
+  const memberNames = (message.minimizedResult.member_names as Record<string, string> | null) ?? {};
+  const hasMemberNames = Object.keys(memberNames).length > 0;
 
   return {
     absences: absences as AbsenceRow[],
@@ -120,7 +125,8 @@ function extractAbsenceData(message: ChatMessage): AbsenceData | null {
     endDate: dateRange?.endDate ?? "",
     isWorkforce: employee == null,
     department: null,
-    isDepartmentOverlap: false,
+    isDepartmentOverlap: hasMemberNames,
+    memberNames,
   };
 }
 
@@ -132,33 +138,80 @@ function statusBadgeClass(status: string): string {
   return "absence-badge--default";
 }
 
-function downloadCSV(message: ChatMessage) {
-  const data = extractAbsenceData(message);
-  if (!data) return;
+function toXmlSafe(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-  const { absences, employeeName, startDate, endDate, isWorkforce } = data;
-  const employeeLabel = employeeName ?? "All_Employees";
-  const period = startDate && endDate ? `${startDate}_${endDate}` : "export";
+function buildSpreadsheetML(headers: string[], rows: (string | number | null)[][]): string {
+  const xmlRows = [headers as (string | number | null)[], ...rows]
+    .map(
+      (row) =>
+        `<Row>${row
+          .map((cell) =>
+            typeof cell === "number"
+              ? `<Cell><Data ss:Type="Number">${cell}</Data></Cell>`
+              : `<Cell><Data ss:Type="String">${toXmlSafe(cell)}</Data></Cell>`
+          )
+          .join("")}</Row>`
+    )
+    .join("\n      ");
 
+  return `<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+          xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+  <Styles>
+    <Style ss:ID="Header">
+      <Font ss:Bold="1"/>
+    </Style>
+  </Styles>
+  <Worksheet ss:Name="Absences">
+    <Table>
+      ${xmlRows}
+    </Table>
+  </Worksheet>
+</Workbook>`;
+}
+
+function downloadExcel(message: ChatMessage) {
   const headers = ["Employee", "Absence Type", "Start Date", "End Date", "Status", "Days"];
-  const rows = absences.map((a) => [
-    isWorkforce ? a.user_id : (employeeName ?? a.user_id),
-    a.absence_type ?? "",
-    a.start_date ?? "",
-    a.end_date ?? "",
-    a.approval_status ?? "",
-    a.quantity_in_days ?? "",
-  ]);
+  let rows: (string | number | null)[][];
+  let employeeLabel: string;
+  let period: string;
 
-  const csvContent = [headers, ...rows]
-    .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
-    .join("\n");
+  const comparison = message.minimizedResult?.comparison as ComparisonData | undefined;
+  if (comparison) {
+    const absences = (message.minimizedResult?.absences as AbsenceRow[] | undefined) ?? [];
+    const dateRange = message.minimizedResult?.date_range as Record<string, string> | undefined;
+    employeeLabel = `${comparison.employee_a.name}_vs_${comparison.employee_b.name}`;
+    period = dateRange ? `${dateRange.startDate}_${dateRange.endDate}` : "export";
+    rows = absences.map((a) => {
+      const name = a.user_id === comparison.employee_a.user_id ? comparison.employee_a.name : comparison.employee_b.name;
+      return [name, getAbsenceLabel(a.absence_type), a.start_date ?? "", a.end_date ?? "", a.approval_status ?? "", a.quantity_in_days ?? null];
+    });
+  } else {
+    const data = extractAbsenceData(message);
+    if (!data) return;
+    const { absences, employeeName, startDate, endDate, isWorkforce, isDepartmentOverlap, memberNames } = data;
+    employeeLabel = employeeName ?? "All_Employees";
+    period = startDate && endDate ? `${startDate}_${endDate}` : "export";
+    rows = absences.map((a) => {
+      const emp = isWorkforce
+        ? (isDepartmentOverlap ? (memberNames[a.user_id] ?? a.user_id) : a.user_id)
+        : (employeeName ?? a.user_id);
+      return [emp, getAbsenceLabel(a.absence_type), a.start_date ?? "", a.end_date ?? "", a.approval_status ?? "", a.quantity_in_days ?? null];
+    });
+  }
 
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const xml = buildSpreadsheetML(headers, rows);
+  const blob = new Blob([xml], { type: "application/vnd.ms-excel;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `absences_${employeeLabel.replace(/\s+/g, "_")}_${period}.csv`;
+  link.download = `absences_${employeeLabel.replace(/\s+/g, "_")}_${period}.xls`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -269,19 +322,126 @@ function addAllToOutlook(message: ChatMessage) {
     });
 }
 
+interface ComparisonStats {
+  total_absences: number;
+  total_days: number;
+  by_type: Record<string, { count: number; days: number }>;
+}
+
+interface ComparisonEmployee {
+  user_id: string;
+  name: string;
+  stats: ComparisonStats;
+}
+
+interface ComparisonData {
+  employee_a: ComparisonEmployee;
+  employee_b: ComparisonEmployee;
+}
+
+function ComparisonView({ message }: { message: ChatMessage }) {
+  if (!message.minimizedResult) return null;
+  const comparison = message.minimizedResult.comparison as ComparisonData | undefined;
+  if (!comparison) return null;
+
+  const dateRange = message.minimizedResult.date_range as Record<string, string> | undefined;
+  const period = dateRange ? `${dateRange.startDate} to ${dateRange.endDate}` : "";
+  const absences = message.minimizedResult.absences as AbsenceRow[] | undefined ?? [];
+  const { employee_a, employee_b } = comparison;
+
+  const allTypes = Array.from(new Set([
+    ...Object.keys(employee_a.stats.by_type),
+    ...Object.keys(employee_b.stats.by_type),
+  ]));
+
+  return (
+    <div>
+      <p className="absence-summary">
+        Absence comparison: <strong>{employee_a.name}</strong> vs <strong>{employee_b.name}</strong>
+        {period ? ` — ${period}` : ""}
+      </p>
+
+      <div className="comparison-cards">
+        {[employee_a, employee_b].map((emp) => (
+          <div key={emp.user_id} className="comparison-card">
+            <div className="comparison-card__header">
+              <div className="comparison-card__avatar">{emp.name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)}</div>
+              <div>
+                <div className="comparison-card__name">{emp.name}</div>
+                <div className="comparison-card__sub">{emp.stats.total_absences} absence{emp.stats.total_absences !== 1 ? "s" : ""} · {emp.stats.total_days} day{emp.stats.total_days !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+            {allTypes.length > 0 && (
+              <div className="comparison-card__breakdown">
+                {allTypes.map(t => {
+                  const info = emp.stats.by_type[t];
+                  if (!info) return null;
+                  return (
+                    <div key={t} className="comparison-card__type-row">
+                      <span className="comparison-card__type-label">{getAbsenceLabel(t)}</span>
+                      <span className="comparison-card__type-val">{info.count}× · {info.days}d</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {absences.length > 0 && (
+        <div className="absence-table-wrapper" style={{ marginTop: 16 }}>
+          <table className="absence-table">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Absence Type</th>
+                <th>Start Date</th>
+                <th>End Date</th>
+                <th>Status</th>
+                <th>Days</th>
+              </tr>
+            </thead>
+            <tbody>
+              {absences.map((a, i) => {
+                const name = a.user_id === employee_a.user_id ? employee_a.name : employee_b.name;
+                return (
+                  <tr key={i}>
+                    <td>{name}</td>
+                    <td>{getAbsenceLabel(a.absence_type)}</td>
+                    <td>{a.start_date || "—"}</td>
+                    <td>{a.end_date || "—"}</td>
+                    <td><span className={`absence-badge ${statusBadgeClass(a.approval_status ?? "")}`}>{a.approval_status || "—"}</span></td>
+                    <td>{a.quantity_in_days != null ? a.quantity_in_days : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AbsenceTable({ data }: { data: AbsenceData }) {
-  const { absences, employeeName, startDate, endDate, isWorkforce, department, isDepartmentOverlap } = data;
+  const { absences, employeeName, startDate, endDate, isWorkforce, department, isDepartmentOverlap, memberNames } = data;
   const label = employeeName ?? "all employees";
   const period = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
   const count = absences.length;
   const showDays = absences.some((a) => a.quantity_in_days != null);
+  const resolveEmployee = (userId: string) => memberNames[userId] ?? userId;
 
   const summaryText = isDepartmentOverlap
     ? <>
-        Found <strong>{count}</strong> absence record{count !== 1 ? "s" : ""} for other employees
-        {department ? <> in the <strong>{department}</strong> department</> : " in the same department"}
+        Found <strong>{count}</strong> absence record{count !== 1 ? "s" : ""}
+        {department
+          ? <> for other employees in the <strong>{department}</strong> department</>
+          : employeeName
+            ? <> for <strong>{label}</strong>'s direct reports</>
+            : " for your team"}
         {period ? ` — ${period}` : ""}
-        {employeeName ? <> (same period as <strong>{label}</strong>)</> : ""}
+        {employeeName && department ? <> (same period as <strong>{label}</strong>)</> : null}
       </>
     : <>
         Found <strong>{count}</strong> absence record{count !== 1 ? "s" : ""} for{" "}
@@ -298,7 +458,7 @@ function AbsenceTable({ data }: { data: AbsenceData }) {
         <table className="absence-table">
           <thead>
             <tr>
-              {isWorkforce && <th>Employee ID</th>}
+              {isWorkforce && <th>Employee</th>}
               <th>Absence Type</th>
               <th>Start Date</th>
               <th>End Date</th>
@@ -309,7 +469,7 @@ function AbsenceTable({ data }: { data: AbsenceData }) {
           <tbody>
             {absences.map((a, i) => (
               <tr key={i}>
-                {isWorkforce && <td>{a.user_id}</td>}
+                {isWorkforce && <td>{isDepartmentOverlap ? resolveEmployee(a.user_id) : a.user_id}</td>}
                 <td>{getAbsenceLabel(a.absence_type)}</td>
                 <td>{a.start_date || "—"}</td>
                 <td>{a.end_date || "—"}</td>
@@ -335,6 +495,7 @@ export function MessageList({ messages, pendingElapsedSeconds = 0 }: MessageList
     <>
       {messages.map((message) => {
         const absenceData = extractAbsenceData(message);
+        const isComparison = !!(message.minimizedResult?.comparison);
         return (
           <article
             key={message.id}
@@ -346,14 +507,14 @@ export function MessageList({ messages, pendingElapsedSeconds = 0 }: MessageList
                 <span className="pending-indicator">Thinking locally... {pendingElapsedSeconds}s</span>
               ) : null}
               {message.status ? <StatusPill label={message.status} tone={message.status} /> : null}
-              {absenceData ? (
+              {(absenceData || isComparison) ? (
                 <>
                   <button
                     type="button"
                     className="download-btn"
-                    onClick={() => downloadCSV(message)}
+                    onClick={() => downloadExcel(message)}
                   >
-                    ⬇ CSV
+                    ⬇ Excel
                   </button>
                   <button
                     type="button"
@@ -366,7 +527,9 @@ export function MessageList({ messages, pendingElapsedSeconds = 0 }: MessageList
                 </>
               ) : null}
             </div>
-            {absenceData ? (
+            {isComparison ? (
+              <ComparisonView message={message} />
+            ) : absenceData ? (
               <AbsenceTable data={absenceData} />
             ) : (
               <p className="message-card__text">{message.text}</p>

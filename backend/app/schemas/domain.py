@@ -32,6 +32,7 @@ class Employee(BaseModel):
     email: str
     manager_employee_id: str | None = None
     aliases: list[str] = Field(default_factory=list)
+    sap_user_id: str | None = None
 
 
 class RequestContext(BaseModel):

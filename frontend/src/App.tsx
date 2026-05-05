@@ -33,32 +33,68 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
 const FALLBACK_DEMO_USERS: DemoUserSummary[] = [
   {
-    user_id: "demo_employee_sara",
-    display_name: "Sara Bennani",
-    role: "employee",
-    employee_id: "E1001",
-    description: "Employee demo user who can view only Sara's own data.",
-  },
-  {
-    user_id: "demo_manager_meryem",
-    display_name: "Meryem Ait Said",
-    role: "manager",
-    employee_id: "E1000",
-    description: "Manager demo user with access to self and direct reports Sara, Ahmed, and Yasmine Alami.",
-  },
-  {
-    user_id: "demo_manager_omar",
-    display_name: "Omar Kabbaj",
-    role: "manager",
-    employee_id: "E1004",
-    description: "Manager demo user with access to self, Karim Ouali, and Yasmine Amrani.",
-  },
-  {
-    user_id: "demo_hr_admin_nadia",
-    display_name: "Nadia El Fassi",
+    user_id: "demo_fouzi_lekjaa",
+    display_name: "Fouzi Lekjaa",
     role: "hr_admin",
-    employee_id: "E9000",
-    description: "HR admin demo user with access to all seeded employees.",
+    job_title: "Président, FRMF",
+    employee_id: "90000638",
+    description: "FRMF President — full access to all HR data and team absences.",
+  },
+  {
+    user_id: "demo_walid_regragi",
+    display_name: "Walid Regragi",
+    role: "manager",
+    job_title: "Sélectionneur National",
+    employee_id: "90000712",
+    description: "Head Coach Men's National Team — access to self and direct reports.",
+  },
+  {
+    user_id: "demo_mouna_bennani",
+    display_name: "Mouna Bennani",
+    role: "hr_admin",
+    job_title: "Responsable RH",
+    employee_id: "90000726",
+    description: "HR Operations Manager — full HR data access.",
+  },
+  {
+    user_id: "demo_leila_haddad",
+    display_name: "Leila Haddad",
+    role: "employee",
+    job_title: "Directrice Administrative",
+    employee_id: "90000730",
+    description: "Administrative Director — can view own absence data only.",
+  },
+  {
+    user_id: "demo_assistant_coach",
+    display_name: "Assistant Coach",
+    role: "employee",
+    job_title: "Entraîneur Adjoint",
+    employee_id: "90000714",
+    description: "Assistant Coach — can view own absence data only.",
+  },
+  {
+    user_id: "demo_ilham_tbato",
+    display_name: "Ilham Tbato",
+    role: "employee",
+    job_title: "Analyste Performance",
+    employee_id: "90000718",
+    description: "Performance Analyst — can view own absence data only.",
+  },
+  {
+    user_id: "demo_eduardo_dominguez",
+    display_name: "Eduardo Dominguez",
+    role: "employee",
+    job_title: "Préparateur Physique",
+    employee_id: "90000722",
+    description: "Physical Trainer — can view own absence data only.",
+  },
+  {
+    user_id: "demo_visionage_video",
+    display_name: "Visionage Video",
+    role: "employee",
+    job_title: "Analyste Vidéo",
+    employee_id: "90000736",
+    description: "Video Analyst — can view own absence data only.",
   },
 ];
 
@@ -67,27 +103,27 @@ const CATEGORIES = [
     icon: "📅",
     title: "Absence Lookup",
     prompts: [
-      "How many absences did Sara Bennani have between 2026-01-01 and 2026-03-31?",
-      "List Sara Bennani's absences in March 2026.",
-      "How many sick leaves did Sara Bennani have in Q1 2026?",
+      "How many absences did Walid Regragi have this month?",
+      "Show Ilham Tbato's absences in April 2026.",
+      "List Eduardo Dominguez's absences this year.",
     ],
   },
   {
     icon: "👥",
     title: "Team Overview",
     prompts: [
-      "How many absences did my direct report Ahmed have last month?",
-      "Show the absence breakdown by type for Yasmine in February 2026.",
-      "How many absences did Karim Ouali have in March 2026?",
+      "Who on my team is absent this week?",
+      "Show my team's absences this month.",
+      "Is there anyone in Walid Regragi's department absent this month?",
     ],
   },
   {
-    icon: "💡",
-    title: "Help & Capabilities",
+    icon: "🏢",
+    title: "Company Wide",
     prompts: [
-      "hello",
-      "what can you do?",
-      "What is Sara Bennani's payroll amount?",
+      "Who is absent today?",
+      "Who is absent this week?",
+      "Show all absences in May 2026.",
     ],
   },
 ];
@@ -115,7 +151,7 @@ function pickInitialUserId(
 ): string {
   if (storedUserId && users.some((u) => u.user_id === storedUserId)) return storedUserId;
   if (activeUserId && users.some((u) => u.user_id === activeUserId)) return activeUserId;
-  return users[0]?.user_id ?? "demo_manager_meryem";
+  return users[0]?.user_id ?? "demo_fouzi_lekjaa";
 }
 
 function formatErrorMessage(error: unknown): string {
@@ -133,7 +169,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [demoUsers, setDemoUsers] = useState<DemoUserSummary[]>([]);
-  const [activeUserId, setActiveUserId] = useState<string>("demo_manager_meryem");
+  const [activeUserId, setActiveUserId] = useState<string>("demo_fouzi_lekjaa");
   const [inputValue, setInputValue] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [requestHistory, setRequestHistory] = useState<RequestListItem[]>([]);
@@ -148,8 +184,21 @@ function App() {
   const [pendingRequestStartedAt, setPendingRequestStartedAt] = useState<number | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [usingFallbackUsers, setUsingFallbackUsers] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [userMenuOpen]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(ACTIVE_USER_STORAGE_KEY);
@@ -351,7 +400,7 @@ function App() {
     const pendingAssistantMessage: ChatMessage = {
       id: pendingMessageId,
       role: "assistant",
-      text: "Thinking locally with Ollama...",
+      text: `Thinking with ${activeLocalModel || "Ollama"}...`,
       pending: true,
     };
     setMessages((current) => [...current, userMessage, pendingAssistantMessage]);
@@ -439,10 +488,15 @@ function App() {
     <div className="app-shell">
       {/* ── Sidebar ── */}
       <aside className="sidebar">
-        <div className="sidebar__brand">
+        <button
+          type="button"
+          className="sidebar__brand"
+          onClick={() => { setActiveTab("chat"); setMessages([]); }}
+          style={{ background: "none", border: "none", cursor: "pointer", textAlign: "left", width: "100%", padding: 0 }}
+        >
           <div className="brand-icon">🤖</div>
           <span className="brand-name">HR Assistant</span>
-        </div>
+        </button>
 
         <nav className="sidebar__nav">
           <span className="sidebar__section-label">AI Tools</span>
@@ -488,37 +542,41 @@ function App() {
           </button>
         </nav>
 
-        <div className="sidebar__bottom">
-          <div className="sidebar__user">
+        <div className="sidebar__bottom" ref={userMenuRef}>
+          {userMenuOpen && (
+            <div className="user-menu">
+              {demoUsers.map((user) => (
+                <button
+                  key={user.user_id}
+                  type="button"
+                  className={`user-menu-item${user.user_id === activeUserId ? " user-menu-item--active" : ""}`}
+                  onClick={() => { void handleUserChange(user.user_id); setUserMenuOpen(false); }}
+                >
+                  <div className="user-menu-item__avatar">{userInitials(user.display_name)}</div>
+                  <div className="user-menu-item__info">
+                    <div className="user-menu-item__name">{user.display_name}</div>
+                    <div className="user-menu-item__title">{user.job_title || user.role}</div>
+                  </div>
+                  {user.user_id === activeUserId && <span className="user-menu-item__check">✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="sidebar__user sidebar__user--toggle"
+            onClick={() => setUserMenuOpen((o) => !o)}
+            disabled={demoUsers.length === 0}
+          >
             <div className="user-avatar">
               {activeUser ? userInitials(activeUser.display_name) : "?"}
             </div>
             <div className="user-info">
               <div className="user-name">{activeUser?.display_name ?? "Loading..."}</div>
-              <div className="user-role">{activeUser?.role ?? ""}</div>
+              <div className="user-role">{activeUser?.job_title || activeUser?.role || ""}</div>
             </div>
-          </div>
-          <select
-            style={{
-              width: "100%",
-              background: "rgba(255,255,255,0.07)",
-              color: "rgba(255,255,255,0.75)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
-              fontSize: "0.78rem",
-              padding: "6px 8px",
-              cursor: "pointer",
-            }}
-            value={activeUserId}
-            onChange={(e) => void handleUserChange(e.target.value)}
-            disabled={demoUsers.length === 0}
-          >
-            {demoUsers.map((user) => (
-              <option key={user.user_id} value={user.user_id}>
-                {user.display_name} ({user.role})
-              </option>
-            ))}
-          </select>
+            <span className="user-chevron">{userMenuOpen ? "▲" : "▼"}</span>
+          </button>
         </div>
       </aside>
 

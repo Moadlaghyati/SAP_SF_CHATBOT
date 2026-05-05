@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from app.llm.base import LocalLLMClient
 from app.schemas.domain import LocalModelSummary
-from app.schemas.llm import AnswerGenerationPayload, ParsedQuestion
+from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion
 
 
 class MockLocalLLMClient(LocalLLMClient):
@@ -58,6 +58,20 @@ class MockLocalLLMClient(LocalLLMClient):
             absence_type=absence_type,
             needs_clarification=needs_clarification,
             clarification_reason=clarification_reason,
+        )
+
+    async def extract_absence_params(self, question: str, current_date: date) -> AbsenceExtractionResult:
+        from app.agents.sap.absence_extraction import extract_absence_retrieval_params
+        params = extract_absence_retrieval_params(question, current_date=current_date)
+        return AbsenceExtractionResult(
+            scope=params.scope,
+            employee_name=params.employee_name,
+            employee_name_b=params.employee_name_b,
+            user_id=params.user_id,
+            start_date=params.start_date,
+            end_date=params.end_date,
+            needs_clarification=bool(params.missing_required_fields),
+            clarification_message=params.clarification_message,
         )
 
     async def generate_answer(self, payload: AnswerGenerationPayload) -> str:

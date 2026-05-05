@@ -32,12 +32,34 @@ _OVERLAP_PATTERNS = [
     r"\bin\s+(?:the\s+)?(?:same\s+)?(?:department|team)\b.*\babsent\b",
     r"\babsent\b.*\bin\s+(?:the\s+)?(?:same\s+)?(?:department|team)\b",
     r"\b(?:department|team)\b.*\b(?:members?|colleagues?|employees?)\b.*\babsent\b",
+    # "in Walid's department", "in John Smith's team", "in the HR department"
+    r"\bin\s+(?:the\s+)?[\w][\w' -]*?(?:'s)?\s+(?:department|team|group)\b",
+    # "anyone in Walid's department absent"
+    r"\b(?:anyone|any\s+one|anybody|someone|somebody)\b.*\b(?:department|team)\b.*\b(?:absent|on\s+leave|off)\b",
+    # "absent in [name]'s department"
+    r"\b(?:absent|on\s+leave|off)\b.*\bin\s+[\w][\w' -]*?(?:'s)?\s+(?:department|team)\b",
 ]
 
 
 def detect_department_overlap_intent(message: str) -> bool:
     lowered = message.lower()
     return any(re.search(pattern, lowered, re.IGNORECASE) for pattern in _OVERLAP_PATTERNS)
+
+
+_DEPT_NAME_PATTERNS = [
+    r"\bin\s+(?:the\s+)?([A-Za-z][A-Za-z' -]+?)(?:'s)?\s+(?:department|team|group)\b",
+    r"\b(?:department|team)\s+of\s+([A-Za-z][A-Za-z' -]+?)\s*(?:\?|$|\b(?:absent|on\s+leave))",
+]
+
+
+def _extract_employee_name_from_department_phrase(text: str) -> str | None:
+    for pattern in _DEPT_NAME_PATTERNS:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip().title()
+            if len(candidate) >= 2 and not re.search(r"\d", candidate):
+                return candidate
+    return None
 
 
 class DepartmentOverlapAgent:
@@ -83,7 +105,7 @@ class DepartmentOverlapAgent:
         )
 
         user_id = params.user_id
-        employee_name = params.employee_name
+        employee_name = params.employee_name or _extract_employee_name_from_department_phrase(message)
 
         if not user_id and not employee_name:
             return SapDepartmentOverlapClarificationResult(
@@ -98,6 +120,18 @@ class DepartmentOverlapAgent:
             )
 
         if not user_id and employee_name:
+            if len(employee_name.strip().split()) < 2:
+                return SapDepartmentOverlapClarificationResult(
+                    handled=True,
+                    type="department_overlap",
+                    status="needs_clarification",
+                    message=(
+                        f"I found the name '{employee_name}' but need the full name "
+                        f"(first and last name) or the employee's userId to look them up. "
+                        f"For example: \"Is there anyone in Walid Regragi's department absent in March 2026?\""
+                    ),
+                    missing_fields=["employee_full_name"],
+                )
             try:
                 record(
                     "dept_overlap_user_resolution",
@@ -236,6 +270,25 @@ class DepartmentOverlapAgent:
             {"absence_count": len(all_absences)},
         )
 
+        # Resolve display names for all employees who appear in the absences
+        absent_user_ids = list({a.user_id for a in all_absences if a.user_id})
+        record(
+            "dept_overlap_name_resolution",
+            "running",
+            "Resolving display names for absent department members.",
+            {"count": len(absent_user_ids)},
+        )
+        try:
+            member_names = await self._client.get_display_names_for_user_ids(absent_user_ids)
+        except Exception:
+            member_names = {}
+        record(
+            "dept_overlap_name_resolution",
+            "completed",
+            "Resolved display names.",
+            {"resolved": len(member_names)},
+        )
+
         target_employee_dict: dict[str, str] = {"userId": user_id}
         if employee_name:
             target_employee_dict["name"] = employee_name
@@ -246,6 +299,7 @@ class DepartmentOverlapAgent:
             start_date=start_date,
             end_date=end_date,
             absences=all_absences,
+            member_names=member_names,
         )
 
         return SapDepartmentOverlapSuccessResult(
@@ -256,6 +310,7 @@ class DepartmentOverlapAgent:
             department=department,
             date_range={"startDate": start_date, "endDate": end_date},
             absences=all_absences,
+            member_names=member_names,
             summary_text=summary,
         )
 
@@ -267,7 +322,9 @@ def _format_summary(
     start_date: str,
     end_date: str,
     absences: list[EmployeeAbsence],
+    member_names: dict[str, str] | None = None,
 ) -> str:
+    names = member_names or {}
     emp_label = target_employee.get("name") or target_employee.get("userId") or "the employee"
     period = start_date if start_date == end_date else f"{start_date} to {end_date}"
     if not absences:
@@ -280,10 +337,11 @@ def _format_summary(
         f"for other employees in the '{department}' department during {period}:"
     ]
     for i, absence in enumerate(absences, start=1):
+        display = names.get(absence.user_id) or f"User {absence.user_id}"
         absence_type = absence.absence_type or "Absence"
         status = absence.approval_status or "Status unavailable"
         lines.append(
-            f"{i}. User {absence.user_id} — {absence_type} "
+            f"{i}. {display} — {absence_type} "
             f"— {absence.start_date} to {absence.end_date} — {status}"
         )
     return "\n".join(lines)

@@ -14,7 +14,8 @@ from app.audit.service import AuditService, RedactionService
 from app.auth.service import AuthorizationService
 from app.config.settings import Settings
 from app.connectors.base import SuccessFactorsConnector
-from app.connectors.mock_data import DEMO_ACCESS_MAP, DEMO_USERS
+from app.connectors.mock_data import DEMO_ACCESS_MAP, DEMO_USERS, MOCK_EMPLOYEES
+from app.connectors.mock_sap_client import MockSapClient
 from app.connectors.mock_successfactors import MockSuccessFactorsConnector
 from app.connectors.real_successfactors import RealSuccessFactorsConnector
 from app.llm.base import LocalLLMClient
@@ -48,6 +49,8 @@ class AppContainer:
         self.sap_success_factors_client: SapSuccessFactorsClient | None = None
         self.sap_absence_agent: SapAbsenceAgent | None = None
         self.dept_overlap_agent: DepartmentOverlapAgent | None = None
+        # Populated at startup: maps mock employee_id -> real SAP userId
+        self.sap_employee_id_map: dict[str, str] = {}
         self._build_sap_agents()
         self.authorization_service = AuthorizationService(self.demo_user_repository)
         self.audit_service = AuditService(self.audit_repository, RedactionService())
@@ -61,6 +64,7 @@ class AppContainer:
             llm_client=self.llm_client,
             sap_absence_agent=self.sap_absence_agent,
             dept_overlap_agent=self.dept_overlap_agent,
+            sap_employee_id_map=self.sap_employee_id_map,
         )
 
     def _build_connector(self) -> SuccessFactorsConnector:
@@ -74,27 +78,61 @@ class AppContainer:
         return OllamaClient(self.settings)
 
     def _build_sap_agents(self) -> None:
-        if self.settings.connector_backend != "successfactors":
-            return
-        self.sap_auth_service = SapAuthService(self.settings)
-        self.sap_success_factors_client = SapSuccessFactorsClient(
-            settings=self.settings,
-            auth_service=self.sap_auth_service,
-        )
-        provider = lambda: self.settings.demo_reference_date
+        from datetime import date as _date
+        provider = lambda: _date.today()
+
+        if self.settings.connector_backend == "successfactors":
+            self.sap_auth_service = SapAuthService(self.settings)
+            self.sap_success_factors_client = SapSuccessFactorsClient(
+                settings=self.settings,
+                auth_service=self.sap_auth_service,
+            )
+            sap_client = self.sap_success_factors_client
+        else:
+            sap_client = MockSapClient()
+
         self.sap_absence_agent = SapAbsenceAgent(
-            client=self.sap_success_factors_client,
+            client=sap_client,
             current_date_provider=provider,
+            llm_client=self.llm_client,
         )
         self.dept_overlap_agent = DepartmentOverlapAgent(
-            client=self.sap_success_factors_client,
+            client=sap_client,
             current_date_provider=provider,
         )
 
     async def startup(self) -> None:
         Base.metadata.create_all(bind=self.engine)
         self.demo_user_repository.seed(DEMO_USERS, DEMO_ACCESS_MAP)
+        if self.settings.connector_backend == "successfactors" and self.sap_success_factors_client:
+            await self._resolve_sap_employee_ids()
         LOGGER.info("Application container started with connector=%s llm=%s", self.connector.backend_name, self.llm_client.backend_name)
+
+    async def _resolve_sap_employee_ids(self) -> None:
+        """Resolve all demo employee names to their real SAP userIds at startup."""
+        for emp in MOCK_EMPLOYEES:
+            try:
+                # Hardcoded override takes priority — no API call needed
+                if emp.sap_user_id:
+                    self.sap_employee_id_map[emp.employee_id] = emp.sap_user_id
+                    LOGGER.info("[SAP] Resolved employee %s (%s) -> SAP userId %s (hardcoded)", emp.display_name, emp.employee_id, emp.sap_user_id)
+                    continue
+
+                real_id = await self.sap_success_factors_client.resolve_user_id_by_name(emp.display_name)  # type: ignore[union-attr]
+                if not real_id:
+                    LOGGER.info("[SAP] Name lookup failed for %s (%s), trying personIdExternal fallback", emp.display_name, emp.employee_id)
+                    real_id = await self.sap_success_factors_client.resolve_user_id_by_person_id(person_id=emp.employee_id)  # type: ignore[union-attr]
+                if not real_id:
+                    LOGGER.info("[SAP] personIdExternal fallback failed for %s (%s), checking if mock ID is valid SAP userId", emp.display_name, emp.employee_id)
+                    if await self.sap_success_factors_client.verify_user_id_exists(emp.employee_id):  # type: ignore[union-attr]
+                        real_id = emp.employee_id
+                if real_id:
+                    self.sap_employee_id_map[emp.employee_id] = real_id
+                    LOGGER.info("[SAP] Resolved employee %s (%s) -> SAP userId %s", emp.display_name, emp.employee_id, real_id)
+                else:
+                    LOGGER.warning("[SAP] Could not resolve SAP userId for %s (%s), using mock ID as fallback", emp.display_name, emp.employee_id)
+            except Exception as exc:
+                LOGGER.warning("[SAP] Error resolving SAP userId for %s: %s", emp.display_name, exc)
 
     async def shutdown(self) -> None:
         close_connector = getattr(self.connector, "close", None)

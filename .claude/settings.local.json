@@ -7,7 +7,9 @@
       "Bash(python -c \"from app.agents.sap.absence_formatter import normalize_employee_absences; print\\('OK'\\)\")",
       "Bash(python -c ' *)",
       "Bash(python -c \"from app.agents.sap.department_overlap_agent import DepartmentOverlapAgent, detect_department_overlap_intent; print\\('OK'\\)\")",
-      "Bash(python -m py_compile app/services/container.py app/orchestrator/service.py app/agents/sap/department_overlap_agent.py app/agents/sap/absence_schemas.py)"
+      "Bash(python -m py_compile app/services/container.py app/orchestrator/service.py app/agents/sap/department_overlap_agent.py app/agents/sap/absence_schemas.py)",
+      "Bash(ollama pull *)",
+      "Bash(ollama list *)"
     ]
   }
 }

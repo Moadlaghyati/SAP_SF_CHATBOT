@@ -14,8 +14,9 @@ class AbsenceIntentResult:
 @dataclass(frozen=True)
 class AbsenceRetrievalParams:
     raw_user_question: str
-    scope: Literal["employee", "workforce"] = "employee"
+    scope: Literal["self", "specific_employee", "direct_report_or_team", "workforce", "comparison", "unknown"] = "specific_employee"
     employee_name: str | None = None
+    employee_name_b: str | None = None
     user_id: str | None = None
     start_date: str | None = None
     end_date: str | None = None
@@ -47,6 +48,8 @@ class SapAbsenceSuccessResult:
     date_range: dict[str, str]
     absences: list[EmployeeAbsence]
     summary_text: str
+    member_names: dict[str, str] | None = None
+    comparison: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,7 @@ class SapDepartmentOverlapSuccessResult:
     department: str
     date_range: dict[str, str]
     absences: list[EmployeeAbsence]
+    member_names: dict[str, str]
     summary_text: str
 
 

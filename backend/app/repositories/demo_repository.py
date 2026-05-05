@@ -38,6 +38,7 @@ class DemoUserRepository:
                         user_id=user.user_id,
                         display_name=user.display_name,
                         role=user.role,
+                        job_title=user.job_title,
                         employee_id=user.employee_id,
                         description=user.description,
                     )
@@ -55,6 +56,7 @@ class DemoUserRepository:
                     user_id=user.user_id,
                     display_name=user.display_name,
                     role=user.role,  # type: ignore[arg-type]
+                    job_title=user.job_title,
                     employee_id=user.employee_id,
                     description=user.description,
                 )
@@ -70,6 +72,7 @@ class DemoUserRepository:
                 user_id=user.user_id,
                 display_name=user.display_name,
                 role=user.role,  # type: ignore[arg-type]
+                job_title=user.job_title,
                 employee_id=user.employee_id,
                 description=user.description,
             )

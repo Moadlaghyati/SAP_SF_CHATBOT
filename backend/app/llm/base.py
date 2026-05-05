@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 
 from app.schemas.domain import LocalModelSummary
-from app.schemas.llm import AnswerGenerationPayload, ParsedQuestion
+from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion
 
 
 class LocalLLMClient(ABC):
@@ -12,6 +12,10 @@ class LocalLLMClient(ABC):
 
     @abstractmethod
     async def extract_question(self, question: str, current_date: date) -> ParsedQuestion:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def extract_absence_params(self, question: str, current_date: date) -> AbsenceExtractionResult:
         raise NotImplementedError
 
     @abstractmethod

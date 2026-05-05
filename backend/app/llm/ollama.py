@@ -6,9 +6,9 @@ import httpx
 
 from app.config.settings import Settings
 from app.llm.base import LocalLLMClient
-from app.llm.prompts import build_answer_prompt, build_extraction_prompt
+from app.llm.prompts import build_absence_extraction_prompt, build_answer_prompt, build_extraction_prompt
 from app.schemas.domain import LocalModelSummary
-from app.schemas.llm import AnswerGenerationPayload, ParsedQuestion
+from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion
 from app.services.errors import LocalLLMUnavailableError, StructuredOutputError
 
 
@@ -48,6 +48,29 @@ class OllamaClient(LocalLLMClient):
             return ParsedQuestion.model_validate_json(raw_response)
         except ValueError as exc:
             raise StructuredOutputError("The local model returned malformed structured output.") from exc
+
+    async def extract_absence_params(self, question: str, current_date: date) -> AbsenceExtractionResult:
+        prompt = build_absence_extraction_prompt(question, current_date)
+        try:
+            response = await self._client.post(
+                "/api/generate",
+                json={
+                    "model": self._settings.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0},
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise self._map_http_error(exc) from exc
+
+        raw = response.json().get("response", "").strip()
+        try:
+            return AbsenceExtractionResult.model_validate_json(raw)
+        except ValueError:
+            return AbsenceExtractionResult(needs_clarification=True, clarification_message="I could not understand that request. Please try rephrasing.")
 
     async def generate_answer(self, payload: AnswerGenerationPayload) -> str:
         prompt = build_answer_prompt(payload)

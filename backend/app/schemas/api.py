@@ -68,6 +68,7 @@ class DemoUserSummary(BaseModel):
     user_id: str
     display_name: str
     role: RoleType
+    job_title: str = ""
     employee_id: str | None = None
     description: str
 

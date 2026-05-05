@@ -45,3 +45,14 @@ class AnswerGenerationPayload(BaseModel):
     clarification_options: list[str] = Field(default_factory=list)
     supported_capabilities: list[str] = Field(default_factory=list)
     error_message: str | None = None
+
+
+class AbsenceExtractionResult(BaseModel):
+    scope: str = "unknown"
+    employee_name: str | None = None
+    employee_name_b: str | None = None
+    user_id: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    needs_clarification: bool = False
+    clarification_message: str | None = None
