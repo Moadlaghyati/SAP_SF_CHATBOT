@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     sap_company_id: str | None = None
     sap_oauth_token_url: str | None = None
     sap_acting_user_id: str | None = None  # SAP userId of the logged-in user (for "my absences" / "my team" queries)
+    sap_hr_admin_user_ids: list[str] = Field(default_factory=list)  # Comma-separated SAP userIds with HR admin access
     sap_auth_mode: str = "basic"
     sap_username: str | None = None
     sap_password: str | None = None

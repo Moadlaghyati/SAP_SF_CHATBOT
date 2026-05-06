@@ -111,6 +111,13 @@ class AppContainer:
             await self._resolve_sap_employee_ids()
             fetched = await self.sap_success_factors_client.fetch_all_user_ids()
             self.sap_all_user_ids.extend(fetched)
+            # Auto-register the configured acting user so no login screen is shown
+            if self.settings.sap_acting_user_id:
+                try:
+                    await self.sap_login_user(self.settings.sap_acting_user_id)
+                    LOGGER.info("[Auth] Auto-registered SAP acting user: %s", self.settings.sap_acting_user_id)
+                except Exception as exc:
+                    LOGGER.warning("[Auth] Could not auto-register SAP acting user %s: %s", self.settings.sap_acting_user_id, exc)
         LOGGER.info("Application container started with connector=%s llm=%s sap_users=%d", self.connector.backend_name, self.llm_client.backend_name, len(self.sap_all_user_ids))
 
     async def _resolve_sap_employee_ids(self) -> None:
@@ -138,6 +145,48 @@ class AppContainer:
                     LOGGER.warning("[SAP] Could not resolve SAP userId for %s (%s), using mock ID as fallback", emp.display_name, emp.employee_id)
             except Exception as exc:
                 LOGGER.warning("[SAP] Error resolving SAP userId for %s: %s", emp.display_name, exc)
+
+    async def sap_login_user(self, user_id: str) -> "DemoUserSummary":
+        from app.schemas.api import DemoUserSummary as _DemoUserSummary
+        if self.settings.connector_backend != "successfactors" or not self.sap_success_factors_client:
+            user = self.demo_user_repository.get_user(user_id)
+            if not user:
+                raise ValueError(f"User '{user_id}' not found.")
+            return user
+
+        display_name = await self.sap_success_factors_client._resolve_one_display_name(user_id) or user_id
+        job_title = await self.sap_success_factors_client.get_user_job_title(user_id) or ""
+        direct_reports = await self.sap_success_factors_client.get_direct_report_user_ids(
+            manager_user_id=user_id, manager_display_name=display_name
+        )
+
+        hr_admin_ids = {uid.strip() for uid in self.settings.sap_hr_admin_user_ids}
+        if user_id in hr_admin_ids:
+            role: str = "hr_admin"
+        elif direct_reports:
+            role = "manager"
+        else:
+            role = "employee"
+
+        if role == "hr_admin":
+            allowed_ids = [user_id]  # hr_admin uses all_sap_user_ids at query time
+        elif role == "manager":
+            allowed_ids = [user_id] + direct_reports
+        else:
+            allowed_ids = [user_id]
+
+        user_summary = _DemoUserSummary(
+            user_id=user_id,
+            display_name=display_name,
+            role=role,  # type: ignore[arg-type]
+            job_title=job_title,
+            employee_id=user_id,
+            description=f"SAP user — {role}",
+        )
+        self.demo_user_repository.upsert_user(user_summary, allowed_ids)
+        self.settings.sap_acting_user_id = user_id
+        LOGGER.info("[Auth] SAP login: user=%s display=%s role=%s direct_reports=%d", user_id, display_name, role, len(direct_reports))
+        return user_summary
 
     async def shutdown(self) -> None:
         close_connector = getattr(self.connector, "close", None)

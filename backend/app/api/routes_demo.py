@@ -6,6 +6,7 @@ from app.api.dependencies import get_container
 from app.schemas.api import (
     DemoUsersResponse,
     LocalModelsResponse,
+    SapLoginRequest,
     SwitchLocalModelRequest,
     SwitchLocalModelResponse,
     SwitchUserRequest,
@@ -19,9 +20,13 @@ router = APIRouter(prefix="/demo", tags=["demo"])
 
 @router.get("/users", response_model=DemoUsersResponse)
 def list_demo_users(container: AppContainer = Depends(get_container)) -> DemoUsersResponse:
+    if container.settings.connector_backend == "successfactors" and container.settings.sap_acting_user_id:
+        active_id = container.settings.sap_acting_user_id
+    else:
+        active_id = container.settings.default_demo_user_id
     return DemoUsersResponse(
         items=container.authorization_service.list_demo_users(),
-        active_user_id=container.settings.default_demo_user_id,
+        active_user_id=active_id,
     )
 
 
@@ -33,6 +38,20 @@ def switch_demo_user(
     user = container.demo_user_repository.get_user(payload.user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demo user not found.")
+    return SwitchUserResponse(active_user=user)
+
+
+@router.post("/sap-login", response_model=SwitchUserResponse)
+async def sap_login(
+    payload: SapLoginRequest,
+    container: AppContainer = Depends(get_container),
+) -> SwitchUserResponse:
+    try:
+        user = await container.sap_login_user(payload.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"SAP lookup failed: {exc}") from exc
     return SwitchUserResponse(active_user=user)
 
 

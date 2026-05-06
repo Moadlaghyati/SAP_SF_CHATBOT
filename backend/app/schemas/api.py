@@ -82,6 +82,10 @@ class SwitchUserRequest(BaseModel):
     user_id: str
 
 
+class SapLoginRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=200)
+
+
 class SwitchUserResponse(BaseModel):
     active_user: DemoUserSummary
 

@@ -85,11 +85,21 @@ Clarification rules:
 - Never ask for clarification about dates — always apply the defaults above
 - Never ask for clarification about scope when it can be reasonably inferred from the question
 
+French language note:
+- French words like "cette" (this), "ce" (this), "ces" (these), "mon" (my), "ma" (my), "de" (of), "du" (of the), "le" (the), "la" (the), "les" (the), "et" (and) are NOT employee names — they are grammar words. Never treat them as a second employee name.
+- "cette année" = "this year", "ce mois" = "this month", "cette semaine" = "this week"
+- French query patterns: "les absences de [NAME]" = absences of [NAME] → specific_employee; "mon équipe" = my team → direct_report_or_team; "mes absences" = my absences → self; "qui est absent" = who is absent → workforce
+
 Examples:
 - "show my absences this month" → {{"scope":"self","start_date":"{this_month_start.isoformat()}","end_date":"{this_month_end.isoformat()}","needs_clarification":false}}
 - "who is absent today" → {{"scope":"workforce","start_date":"{today.isoformat()}","end_date":"{today.isoformat()}","needs_clarification":false}}
 - "can you see who will absent this month and next week" → {{"scope":"workforce","start_date":"{this_month_start.isoformat()}","end_date":"{max(this_month_end, next_week_end).isoformat()}","needs_clarification":false}}
 - "show Walid Regragi absences in April 2026" → {{"scope":"specific_employee","employee_name":"Walid Regragi","start_date":"2026-04-01","end_date":"2026-04-30","needs_clarification":false}}
+- "Je veux voir les absences de Walid Regragi cette année" → {{"scope":"specific_employee","employee_name":"Walid Regragi","start_date":"{today.year}-01-01","end_date":"{today.year}-12-31","needs_clarification":false}}
+- "montre moi les absences de Ahmed Bennani ce mois" → {{"scope":"specific_employee","employee_name":"Ahmed Bennani","start_date":"{this_month_start.isoformat()}","end_date":"{this_month_end.isoformat()}","needs_clarification":false}}
+- "mes absences cette année" → {{"scope":"self","start_date":"{today.year}-01-01","end_date":"{today.year}-12-31","needs_clarification":false}}
+- "qui est absent aujourd'hui" → {{"scope":"workforce","start_date":"{today.isoformat()}","end_date":"{today.isoformat()}","needs_clarification":false}}
+- "absences de mon équipe cette semaine" → {{"scope":"direct_report_or_team","start_date":"{this_week_start.isoformat()}","end_date":"{this_week_end.isoformat()}","needs_clarification":false}}
 - "compare Walid and Ahmed absences this year" → {{"scope":"comparison","employee_name":"Walid","employee_name_b":"Ahmed","start_date":"{today.year}-01-01","end_date":"{today.year}-12-31","needs_clarification":false}}
 - "compare absences of Walid Regragi this year and last year" → {{"scope":"specific_employee","employee_name":"Walid Regragi","start_date":"{today.year - 1}-01-01","end_date":"{today.year}-12-31","needs_clarification":false}}
 - "who on my team is absent this week" → {{"scope":"direct_report_or_team","start_date":"{this_week_start.isoformat()}","end_date":"{this_week_end.isoformat()}","needs_clarification":false}}

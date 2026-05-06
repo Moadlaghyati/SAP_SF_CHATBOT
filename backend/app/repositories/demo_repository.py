@@ -77,6 +77,29 @@ class DemoUserRepository:
                 description=user.description,
             )
 
+    def upsert_user(self, user: DemoUserSummary, allowed_employee_ids: list[str]) -> None:
+        with self._session() as session:
+            existing = session.get(DemoUserORM, user.user_id)
+            if existing:
+                existing.display_name = user.display_name
+                existing.role = user.role
+                existing.job_title = user.job_title
+                existing.employee_id = user.employee_id
+                existing.description = user.description
+            else:
+                session.add(DemoUserORM(
+                    user_id=user.user_id,
+                    display_name=user.display_name,
+                    role=user.role,
+                    job_title=user.job_title,
+                    employee_id=user.employee_id,
+                    description=user.description,
+                ))
+            session.flush()
+            session.query(DemoUserAccessORM).filter(DemoUserAccessORM.user_id == user.user_id).delete()
+            for emp_id in allowed_employee_ids:
+                session.add(DemoUserAccessORM(user_id=user.user_id, employee_id=emp_id))
+
     def get_allowed_employee_ids(self, user_id: str) -> list[str]:
         with self._session() as session:
             rows = session.scalars(

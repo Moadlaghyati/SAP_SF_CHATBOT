@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useRef, useState } from "react";
+import logo from "./assets/logo.png";
 import {
   fetchAudit,
   fetchDemoUsers,
@@ -6,6 +7,7 @@ import {
   fetchLocalModels,
   fetchRequest,
   fetchRequests,
+  sapLogin,
   sendChat,
   switchDemoUser,
   switchLocalModel,
@@ -134,9 +136,35 @@ const FALLBACK_DEMO_USERS: DemoUserSummary[] = [
   },
 ];
 
+interface WeatherInfo {
+  temp: string;
+  desc: string;
+  city: string;
+  emoji: string;
+}
+
+function getWeatherEmoji(code: number): string {
+  if (code === 113) return "☀️";
+  if (code === 116) return "⛅";
+  if (code <= 122) return "☁️";
+  if (code <= 260) return "🌫️";
+  if (code <= 314) return "🌧️";
+  if (code <= 377) return "❄️";
+  return "⛈️";
+}
+
+const FAQ_ITEMS = [
+  { q: "What can PeoplePilot help me with?", a: "PeoplePilot queries absence records, time off, sick leaves, and vacation data directly from SAP SuccessFactors using plain language." },
+  { q: "How do I check my own absences?", a: "Ask \"Show my absences this year\" or \"How many sick days did I take this month?\" — no need for exact field names." },
+  { q: "Who can see other employees' data?", a: "HR Admins see everyone. Managers see their team. Employees see only their own data." },
+  { q: "What date formats are supported?", a: "Natural language works: \"this week\", \"last month\", \"April 2026\", or specific dates like \"04-05-2026\" (day-month-year)." },
+  { q: "Can I export the results?", a: "Yes — every absence table has an Excel export button and an Add to Calendar button directly in the response." },
+];
+
 const CATEGORIES = [
   {
     icon: "📅",
+    colorClass: "category-card__icon-wrap--blue",
     title: "Absence Lookup",
     prompts: [
       "How many absences did Walid Regragi have this month?",
@@ -146,6 +174,7 @@ const CATEGORIES = [
   },
   {
     icon: "👥",
+    colorClass: "category-card__icon-wrap--purple",
     title: "Team Overview",
     prompts: [
       "Who on my team is absent this week?",
@@ -155,6 +184,7 @@ const CATEGORIES = [
   },
   {
     icon: "🏢",
+    colorClass: "category-card__icon-wrap--green",
     title: "Company Wide",
     prompts: [
       "Who is absent today?",
@@ -223,6 +253,11 @@ function App() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversationsFromStorage());
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [weather, setWeather] = useState<WeatherInfo | null>(null);
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const [sapLoginInput, setSapLoginInput] = useState("");
+  const [sapLoginLoading, setSapLoginLoading] = useState(false);
+  const [sapLoginError, setSapLoginError] = useState<string | null>(null);
   // Ref keeps the conversation ID synchronously up-to-date to avoid stale closure issues
   const activeConvIdRef = useRef<string | null>(null);
 
@@ -247,6 +282,24 @@ function App() {
 
   useEffect(() => {
     void loadBootstrap();
+  }, []);
+
+  useEffect(() => {
+    fetch("https://wttr.in/?format=j1")
+      .then((r) => r.json())
+      .then((data) => {
+        const cond = data.current_condition?.[0];
+        const area = data.nearest_area?.[0];
+        if (cond && area) {
+          setWeather({
+            temp: cond.temp_C ?? "?",
+            desc: cond.weatherDesc?.[0]?.value ?? "",
+            city: area.areaName?.[0]?.value ?? "",
+            emoji: getWeatherEmoji(Number(cond.weatherCode ?? 113)),
+          });
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -326,11 +379,13 @@ function App() {
     }
 
     const storedUserId = window.localStorage.getItem(ACTIVE_USER_STORAGE_KEY);
-    const initialUserId = pickInitialUserId(
-      nextDemoUsers,
-      storedUserId,
-      demoUsersResult.status === "fulfilled" ? demoUsersResult.value.active_user_id : null,
-    );
+    const apiActiveUserId = demoUsersResult.status === "fulfilled" ? demoUsersResult.value.active_user_id : null;
+    const isSapModeLocal = healthResult.status === "fulfilled" && healthResult.value.connector_backend === "successfactors";
+    // In SAP mode always use the server-designated active user (auto-registered at startup) so the right org permissions apply.
+    const initialUserId =
+      isSapModeLocal && apiActiveUserId && nextDemoUsers.some((u) => u.user_id === apiActiveUserId)
+        ? apiActiveUserId
+        : pickInitialUserId(nextDemoUsers, storedUserId, apiActiveUserId);
     setActiveUserId(initialUserId);
     window.localStorage.setItem(ACTIVE_USER_STORAGE_KEY, initialUserId);
 
@@ -498,6 +553,35 @@ function App() {
     }
   }
 
+  async function handleSapLogin() {
+    const uid = sapLoginInput.trim();
+    if (!uid) return;
+    setSapLoginLoading(true);
+    setSapLoginError(null);
+    try {
+      const user = await sapLogin(uid);
+      setActiveUserId(user.user_id);
+      window.localStorage.setItem(ACTIVE_USER_STORAGE_KEY, user.user_id);
+      setDemoUsers((prev) => {
+        const filtered = prev.filter((u) => u.user_id !== user.user_id);
+        return [user, ...filtered];
+      });
+      setSapLoginInput("");
+    } catch (err) {
+      setSapLoginError(err instanceof Error ? err.message : "Login failed. Check the user ID and try again.");
+    } finally {
+      setSapLoginLoading(false);
+    }
+  }
+
+  function handleLogout() {
+    window.localStorage.removeItem(ACTIVE_USER_STORAGE_KEY);
+    setActiveUserId("");
+    setMessages([]);
+    setActiveConversationId(null);
+    activeConvIdRef.current = null;
+  }
+
   async function handleModelSwitch() {
     if (!activeLocalModel || modelSwitching) return;
     setModelSwitching(true);
@@ -584,6 +668,43 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
   const showWelcome = activeTab === "chat" && messages.length === 0;
   const effectiveLlmBackend = health?.llm_backend ?? localModelBackend ?? "unknown";
   const showOllamaModelControls = effectiveLlmBackend === "ollama";
+  const isSapMode = (health?.connector_backend ?? "") === "successfactors";
+  const showSapLogin = isSapMode && !activeUserId;
+
+  if (showSapLogin) {
+    return (
+      <div className="sap-login-screen">
+        <div className="sap-login-card">
+          <div className="sap-login-card__logo">
+            <img src={logo} alt="PeoplePilot" style={{ width: 56, height: 56, objectFit: "contain" }} />
+          </div>
+          <h1 className="sap-login-card__title">Welcome to PeoplePilot</h1>
+          <p className="sap-login-card__sub">Sign in with your SAP SuccessFactors User ID</p>
+          <div className="sap-login-card__form">
+            <input
+              className="sap-login-card__input"
+              type="text"
+              placeholder="e.g. cosys_ml"
+              value={sapLoginInput}
+              onChange={(e) => setSapLoginInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void handleSapLogin()}
+              disabled={sapLoginLoading}
+              autoFocus
+            />
+            <button
+              className="sap-login-card__btn"
+              type="button"
+              onClick={() => void handleSapLogin()}
+              disabled={sapLoginLoading || !sapLoginInput.trim()}
+            >
+              {sapLoginLoading ? "Signing in…" : "Sign In"}
+            </button>
+          </div>
+          {sapLoginError && <p className="sap-login-card__error">{sapLoginError}</p>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -595,8 +716,8 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
           onClick={() => { setActiveTab("chat"); setMessages([]); }}
           style={{ background: "none", border: "none", cursor: "pointer", textAlign: "left", width: "100%", padding: 0 }}
         >
-          <div className="brand-icon">🤖</div>
-          <span className="brand-name">HR Assistant</span>
+          <img src={logo} alt="PeoplePilot" className="brand-icon" style={{ width: 32, height: 32, objectFit: "contain" }} />
+          <span className="brand-name">PeoplePilot</span>
         </button>
 
         <nav className="sidebar__nav">
@@ -679,40 +800,61 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
         </nav>
 
         <div className="sidebar__bottom" ref={userMenuRef}>
-          {userMenuOpen && (
-            <div className="user-menu">
-              {demoUsers.map((user) => (
-                <button
-                  key={user.user_id}
-                  type="button"
-                  className={`user-menu-item${user.user_id === activeUserId ? " user-menu-item--active" : ""}`}
-                  onClick={() => { void handleUserChange(user.user_id); setUserMenuOpen(false); }}
-                >
-                  <div className="user-menu-item__avatar">{userInitials(user.display_name)}</div>
-                  <div className="user-menu-item__info">
-                    <div className="user-menu-item__name">{user.display_name}</div>
-                    <div className="user-menu-item__title">{user.job_title || user.role}</div>
-                  </div>
-                  {user.user_id === activeUserId && <span className="user-menu-item__check">✓</span>}
-                </button>
-              ))}
+          {/* SAP mode: just show current user + logout */}
+          {isSapMode ? (
+            <div className="sidebar__user sidebar__user--sap">
+              <div className="user-avatar">
+                {activeUser ? userInitials(activeUser.display_name) : "?"}
+              </div>
+              <div className="user-info">
+                <div className="user-name">{activeUser?.display_name ?? activeUserId}</div>
+                <div className="user-role">{activeUser?.job_title || activeUser?.role || ""}</div>
+              </div>
+              <button
+                type="button"
+                className="sidebar__logout-btn"
+                title="Sign out"
+                onClick={handleLogout}
+              >↩</button>
             </div>
+          ) : (
+            <>
+              {userMenuOpen && (
+                <div className="user-menu">
+                  {demoUsers.map((user) => (
+                    <button
+                      key={user.user_id}
+                      type="button"
+                      className={`user-menu-item${user.user_id === activeUserId ? " user-menu-item--active" : ""}`}
+                      onClick={() => { void handleUserChange(user.user_id); setUserMenuOpen(false); }}
+                    >
+                      <div className="user-menu-item__avatar">{userInitials(user.display_name)}</div>
+                      <div className="user-menu-item__info">
+                        <div className="user-menu-item__name">{user.display_name}</div>
+                        <div className="user-menu-item__title">{user.job_title || user.role}</div>
+                      </div>
+                      {user.user_id === activeUserId && <span className="user-menu-item__check">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                className="sidebar__user sidebar__user--toggle"
+                onClick={() => setUserMenuOpen((o) => !o)}
+                disabled={demoUsers.length === 0}
+              >
+                <div className="user-avatar">
+                  {activeUser ? userInitials(activeUser.display_name) : "?"}
+                </div>
+                <div className="user-info">
+                  <div className="user-name">{activeUser?.display_name ?? "Loading..."}</div>
+                  <div className="user-role">{activeUser?.job_title || activeUser?.role || ""}</div>
+                </div>
+                <span className="user-chevron">{userMenuOpen ? "▲" : "▼"}</span>
+              </button>
+            </>
           )}
-          <button
-            type="button"
-            className="sidebar__user sidebar__user--toggle"
-            onClick={() => setUserMenuOpen((o) => !o)}
-            disabled={demoUsers.length === 0}
-          >
-            <div className="user-avatar">
-              {activeUser ? userInitials(activeUser.display_name) : "?"}
-            </div>
-            <div className="user-info">
-              <div className="user-name">{activeUser?.display_name ?? "Loading..."}</div>
-              <div className="user-role">{activeUser?.job_title || activeUser?.role || ""}</div>
-            </div>
-            <span className="user-chevron">{userMenuOpen ? "▲" : "▼"}</span>
-          </button>
         </div>
       </aside>
 
@@ -742,7 +884,17 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
         {/* Welcome screen */}
         {showWelcome && (
           <div className="welcome-screen">
-            <div className="welcome-icon-wrap">🤖</div>
+            {weather && (
+              <div className="weather-widget">
+                <span className="weather-widget__emoji">{weather.emoji}</span>
+                <span className="weather-widget__temp">{weather.temp}°C</span>
+                <span className="weather-widget__desc">{weather.desc}</span>
+                {weather.city && <span className="weather-widget__city">· {weather.city}</span>}
+              </div>
+            )}
+            <div className="welcome-icon-wrap">
+              <img src={logo} alt="PeoplePilot" style={{ width: 64, height: 64, objectFit: "contain" }} />
+            </div>
             <h1 className="welcome-heading">What HR data can I help you with?</h1>
             <p className="welcome-sub">
               Ask about absences, time off, and employee records — all processed locally with approved SAP tools only.
@@ -759,8 +911,12 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
             <div className="category-grid">
               {CATEGORIES.map((cat) => (
                 <div key={cat.title} className="category-card">
-                  <span className="category-card__icon">{cat.icon}</span>
-                  <p className="category-card__title">{cat.title}</p>
+                  <div className="category-card__header">
+                    <div className={`category-card__icon-wrap ${cat.colorClass}`}>
+                      <span className="category-card__icon">{cat.icon}</span>
+                    </div>
+                    <p className="category-card__title">{cat.title}</p>
+                  </div>
                   <ul className="category-card__prompts">
                     {cat.prompts.map((prompt) => (
                       <li
@@ -774,6 +930,28 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
                   </ul>
                 </div>
               ))}
+            </div>
+
+            {/* FAQ Section */}
+            <div className="faq-section">
+              <h2 className="faq-section__title">Frequently Asked Questions</h2>
+              <div className="faq-list">
+                {FAQ_ITEMS.map((item, i) => (
+                  <div key={i} className={`faq-item ${openFaq === i ? "faq-item--open" : ""}`}>
+                    <button
+                      type="button"
+                      className="faq-item__question"
+                      onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                    >
+                      <span>{item.q}</span>
+                      <span className="faq-item__chevron">{openFaq === i ? "▲" : "▼"}</span>
+                    </button>
+                    {openFaq === i && (
+                      <div className="faq-item__answer">{item.a}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}

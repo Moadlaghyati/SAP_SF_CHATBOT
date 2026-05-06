@@ -264,6 +264,27 @@ class SapSuccessFactorsClient:
         LOGGER.debug("[SAP] resolve_user_id_by_name name=%r resolved_user_id=%s", employee_name, user_id)
         return str(user_id) if user_id else None
 
+    def build_user_job_title_url(self, *, user_id: str) -> str:
+        self._ensure_base_url()
+        sap_filter = f"userId eq '{_escape_odata_string(user_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter, "$select": "userId,jobTitle", "$top": "1", "$orderby": "startDate desc"},
+            quote_via=quote,
+        )
+        return f"{self._settings.sap_base_url.rstrip('/')}/EmpJob?{query}"
+
+    async def get_user_job_title(self, user_id: str) -> str | None:
+        url = self.build_user_job_title_url(user_id=user_id)
+        try:
+            payload = await self._get_json(url)
+        except ConnectorUnavailableError:
+            return None
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list) or not results:
+            return None
+        title = results[0].get("jobTitle")
+        return str(title).strip() if title else None
+
     def build_emp_job_by_person_id_url(self, *, person_id: str) -> str:
         self._ensure_base_url()
         sap_filter = f"personIdExternal eq '{_escape_odata_string(person_id)}'"

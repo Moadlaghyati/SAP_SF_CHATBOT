@@ -56,6 +56,14 @@ export async function switchDemoUser(userId: string): Promise<DemoUserSummary> {
   return payload.active_user;
 }
 
+export async function sapLogin(userId: string): Promise<DemoUserSummary> {
+  const payload = await apiFetch<{ active_user: DemoUserSummary }>("/demo/sap-login", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+  return payload.active_user;
+}
+
 export async function switchLocalModel(model: string): Promise<SwitchLocalModelResponse> {
   return apiFetch<SwitchLocalModelResponse>("/demo/switch-model", {
     method: "POST",

@@ -32,18 +32,20 @@ def normalize_employee_absences(payload: Any) -> list[EmployeeAbsence]:
 
 
 def _is_attendance_record(item: dict) -> bool:
-    # Use the expanded timeTypeNav classification when available
+    # Use the expanded timeTypeNav classification when available.
+    # Only keep records explicitly classified as an absence type (class starts with "ABS").
+    # Everything else (ATTENDANCE, AVAILABILITY, work schedules, etc.) is filtered out.
     time_type_nav = item.get("timeTypeNav")
-    if isinstance(time_type_nav, dict):
+    if isinstance(time_type_nav, dict) and "__deferred" not in time_type_nav:
         classification = str(
             time_type_nav.get("timeTypeClass")
             or time_type_nav.get("classification")
             or ""
-        ).upper()
-        if classification and ("ATTEND" in classification or classification == "WORK"):
-            return True
+        ).strip().upper()
+        if classification:
+            return not classification.startswith("ABS")
 
-    # Fallback: exclude known attendance codes by name when expand is not available
+    # Fallback when timeTypeNav is not expanded: exclude known non-absence codes
     time_type_code = str(item.get("timeType") or "").upper()
     known_attendance_codes = {"MA_WORK", "MA_ATTENDANCE", "MAR_WORK", "MAR_ATTENDANCE"}
     return time_type_code in known_attendance_codes

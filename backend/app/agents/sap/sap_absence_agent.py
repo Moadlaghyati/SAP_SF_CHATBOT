@@ -61,6 +61,11 @@ class SapAbsenceAgent:
             employee_name_b = _clean(result.employee_name_b)
             user_id = _clean(result.user_id)
 
+            # If LLM says comparison but only found one name (common French mis-classification),
+            # downgrade to specific_employee so the query still executes.
+            if scope == "comparison" and employee_name and not employee_name_b:
+                scope = "specific_employee"
+
             # Never trust the LLM's clarification for dates — we always apply defaults.
             # Only ask for clarification when scope is specific_employee and no employee can be identified.
             needs_clarification = (
@@ -398,6 +403,12 @@ class SapAbsenceAgent:
         if params.scope == "workforce":
             assert params.start_date is not None
             assert params.end_date is not None
+
+            # Prefer all_sap_user_ids for workforce (full org); fall back to allowed_employee_ids
+            workforce_ids = all_sap_user_ids or allowed_employee_ids
+
+            if workforce_ids:
+                allowed_employee_ids = workforce_ids  # reuse variable for the block below
 
             if allowed_employee_ids:
                 record(
