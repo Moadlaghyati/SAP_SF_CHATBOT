@@ -105,6 +105,15 @@ button, textarea, select { font: inherit; }
   font-weight: 600;
 }
 
+.sidebar__section-label--recents {
+  font-size: 0.82rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: rgba(255,255,255,0.75);
+  font-weight: 700;
+  padding-top: 14px;
+}
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -130,6 +139,65 @@ button, textarea, select { font: inherit; }
   background: var(--sidebar-active-bg);
   color: var(--sidebar-active-text);
   font-weight: 600;
+}
+
+/* ── Conversation history items ─────────────────────── */
+.conv-item {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 5px 28px 5px 10px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-size: 0.875rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms, color 120ms;
+  overflow: hidden;
+}
+
+.conv-item:hover {
+  background: var(--sidebar-hover);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.conv-item--active {
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-text);
+  font-weight: 600;
+}
+
+.conv-item__title {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-item__meta { display: none; }
+
+.conv-item__delete {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--sidebar-muted);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms, color 120ms;
+  padding: 2px 4px;
+}
+
+.conv-item:hover .conv-item__delete {
+  opacity: 1;
+}
+
+.conv-item__delete:hover {
+  color: #f87171;
 }
 
 .nav-item__icon {

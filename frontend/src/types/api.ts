@@ -149,3 +149,12 @@ export interface ChatMessage {
   pending?: boolean;
   minimizedResult?: Record<string, unknown> | null;
 }
+
+export interface Conversation {
+  id: string;
+  userId: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}

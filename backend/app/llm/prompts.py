@@ -45,7 +45,7 @@ Return ONLY valid JSON with this exact schema:
 Scope rules:
 - "self": user asks about themselves — "my absences", "show my absence", "do I have leave", "my vacation"
 - "specific_employee": asks about a named person — "Walid's absences", "show absences for Ahmed Bennani", "how many days did Sara take"
-- "direct_report_or_team": asks about their own team — "my team", "my direct reports", "who on my team is absent"
+- "direct_report_or_team": asks about their own team or department — "my team", "my direct reports", "who on my team is absent", "our department", "our team", "absences in our department", "absences in my department", "give me the absences of our department", "show department absences"
 - "workforce": asks about everyone or an unspecified group — "who is absent", "who will be absent", "who will absent", "can you see who will absent", "show all absences", "who is off today", "list everyone absent"
 - "comparison": comparing exactly two DIFFERENT named employees — "compare Walid and Ahmed", "Walid vs Ahmed absences"
   • IMPORTANT: "compare Walid this year and last year" is NOT comparison — it is ONE person over two periods → use "specific_employee" with the wider date range (earlier start_date, later end_date)
@@ -93,6 +93,8 @@ Examples:
 - "compare Walid and Ahmed absences this year" → {{"scope":"comparison","employee_name":"Walid","employee_name_b":"Ahmed","start_date":"{today.year}-01-01","end_date":"{today.year}-12-31","needs_clarification":false}}
 - "compare absences of Walid Regragi this year and last year" → {{"scope":"specific_employee","employee_name":"Walid Regragi","start_date":"{today.year - 1}-01-01","end_date":"{today.year}-12-31","needs_clarification":false}}
 - "who on my team is absent this week" → {{"scope":"direct_report_or_team","start_date":"{this_week_start.isoformat()}","end_date":"{this_week_end.isoformat()}","needs_clarification":false}}
+- "can you give me the absences of last week in our department" → {{"scope":"direct_report_or_team","start_date":"{last_week_start.isoformat()}","end_date":"{last_week_end.isoformat()}","needs_clarification":false}}
+- "i want to know the absences of last week in our department" → {{"scope":"direct_report_or_team","start_date":"{last_week_start.isoformat()}","end_date":"{last_week_end.isoformat()}","needs_clarification":false}}
 - "who will be absent in the next 2 weeks starting from 04-05-2026" → {{"scope":"workforce","start_date":"2026-05-04","end_date":"2026-05-18","needs_clarification":false}}
 - "who will be absent in the next 3 weeks" → {{"scope":"workforce","start_date":"{today.isoformat()}","end_date":"{(today + timedelta(days=21)).isoformat()}","needs_clarification":false}}
 - "who is absent tomorrow" → {{"scope":"workforce","start_date":"{(today + timedelta(days=1)).isoformat()}","end_date":"{(today + timedelta(days=1)).isoformat()}","needs_clarification":false}}

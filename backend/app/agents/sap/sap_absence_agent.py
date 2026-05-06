@@ -37,6 +37,16 @@ class SapAbsenceAgent:
             # Normalise dates — empty strings count as missing; default to current year
             start_date = result.start_date if result.start_date else None
             end_date = result.end_date if result.end_date else None
+
+            # If the LLM returned today as both start and end without the user
+            # explicitly saying "today", treat it as a missing date and fall back
+            # to the full current year.
+            today_iso = current_date.isoformat()
+            user_said_today = any(w in message.lower() for w in ("today", "aujourd'hui", "maintenant", "right now", "currently"))
+            if not user_said_today and start_date == today_iso and end_date == today_iso:
+                start_date = None
+                end_date = None
+
             if not start_date:
                 start_date = date(current_date.year, 1, 1).isoformat()
             if not end_date:

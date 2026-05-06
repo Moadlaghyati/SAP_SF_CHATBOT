@@ -19,6 +19,7 @@ import type {
   AuditRecord,
   ChatMessage,
   ChatResponse,
+  Conversation,
   DemoUserSummary,
   HealthResponse,
   LocalModelSummary,
@@ -29,6 +30,41 @@ import type {
 type ActiveTab = "chat" | "history" | "audit" | "trace";
 
 const ACTIVE_USER_STORAGE_KEY = "hr-ai-assistant-active-user";
+const CONVERSATIONS_STORAGE_KEY = "hr-ai-assistant-conversations";
+const MAX_CONVERSATIONS = 30;
+
+function generateId(): string {
+  return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadConversationsFromStorage(): Conversation[] {
+  try {
+    const raw = window.localStorage.getItem(CONVERSATIONS_STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as Conversation[];
+  } catch {
+    return [];
+  }
+}
+
+function saveConversationsToStorage(conversations: Conversation[]): void {
+  try {
+    window.localStorage.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(conversations));
+  } catch {
+    // localStorage full or unavailable
+  }
+}
+
+function formatConvDate(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffDays = Math.floor(diffMs / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return d.toLocaleDateString();
+}
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
 const FALLBACK_DEMO_USERS: DemoUserSummary[] = [
@@ -185,6 +221,10 @@ function App() {
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [usingFallbackUsers, setUsingFallbackUsers] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversationsFromStorage());
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Ref keeps the conversation ID synchronously up-to-date to avoid stale closure issues
+  const activeConvIdRef = useRef<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -212,6 +252,39 @@ function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Persist conversation to localStorage whenever messages settle (no pending messages)
+  useEffect(() => {
+    if (messages.length === 0 || messages.some((m) => m.pending)) return;
+    const firstUser = messages.find((m) => m.role === "user");
+    if (!firstUser) return;
+
+    const title = firstUser.text.slice(0, 60) + (firstUser.text.length > 60 ? "…" : "");
+    const now = new Date().toISOString();
+    const convId = activeConvIdRef.current;
+    const prev = loadConversationsFromStorage();
+    const existingIdx = convId ? prev.findIndex((c) => c.id === convId) : -1;
+
+    let updated: Conversation[];
+    let resultId: string;
+
+    if (existingIdx >= 0) {
+      resultId = convId!;
+      updated = prev.map((c, i) => i === existingIdx ? { ...c, messages, title, updatedAt: now } : c);
+    } else {
+      resultId = generateId();
+      activeConvIdRef.current = resultId; // update ref immediately to prevent duplicate on StrictMode re-run
+      const newConv: Conversation = { id: resultId, userId: activeUserId, title, messages, createdAt: now, updatedAt: now };
+      updated = [newConv, ...prev].slice(0, MAX_CONVERSATIONS);
+    }
+
+    saveConversationsToStorage(updated);
+    setConversations(updated);
+    if (resultId !== activeConversationId) {
+      setActiveConversationId(resultId);
+      activeConvIdRef.current = resultId;
+    }
+  }, [messages, activeUserId]);
 
   useEffect(() => {
     if (!loading || pendingRequestStartedAt === null) {
@@ -441,21 +514,49 @@ function App() {
     }
   }
 
-  function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
+  function startNewChat() {
+    setMessages([]);
+    setActiveConversationId(null);
+    activeConvIdRef.current = null;
+    setActiveTab("chat");
+  }
+
+  function loadConversation(conv: Conversation) {
+    setMessages(conv.messages);
+    setActiveConversationId(conv.id);
+    activeConvIdRef.current = conv.id;
+    setActiveTab("chat");
+  }
+
+  function deleteConversation(convId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    const updated = conversations.filter((c) => c.id !== convId);
+    setConversations(updated);
+    saveConversationsToStorage(updated);
+    if (activeConversationId === convId) {
+      setMessages([]);
+      setActiveConversationId(null);
+    }
+  }
+
+function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
+    const nextMessage: ChatMessage = {
+      id: `assistant-${response.request_id}`,
+      role: "assistant",
+      text: response.answer,
+      status: response.status,
+      requestId: response.request_id,
+      pending: false,
+      minimizedResult: response.trace.minimized_result,
+    };
+
+    // Use functional updater so we always get the latest messages (avoids stale closure)
     setMessages((current) => {
-      const nextMessage: ChatMessage = {
-        id: `assistant-${response.request_id}`,
-        role: "assistant",
-        text: response.answer,
-        status: response.status,
-        requestId: response.request_id,
-        pending: false,
-        minimizedResult: response.trace.minimized_result,
-      };
       if (!pendingMessageId) return [...current, nextMessage];
       const replaced = current.some((m) => m.id === pendingMessageId);
-      if (!replaced) return [...current, nextMessage];
-      return current.map((m) => (m.id === pendingMessageId ? nextMessage : m));
+      return replaced
+        ? current.map((m) => (m.id === pendingMessageId ? nextMessage : m))
+        : [...current, nextMessage];
     });
     setSelectedRequest({
       request_id: response.request_id,
@@ -502,12 +603,47 @@ function App() {
           <span className="sidebar__section-label">AI Tools</span>
           <button
             type="button"
+            className={`nav-item ${activeTab === "chat" && activeConversationId === null && messages.length === 0 ? "nav-item--active" : ""}`}
+            onClick={startNewChat}
+          >
+            <span className="nav-item__icon">✏️</span>
+            New Chat
+          </button>
+          <button
+            type="button"
             className={`nav-item ${activeTab === "chat" ? "nav-item--active" : ""}`}
             onClick={() => setActiveTab("chat")}
           >
             <span className="nav-item__icon">💬</span>
             Chat AI
           </button>
+
+          {conversations.filter((c) => c.userId === activeUserId).length > 0 && (
+            <>
+              <span className="sidebar__section-label sidebar__section-label--recents">Recents</span>
+              {conversations
+                .filter((c) => c.userId === activeUserId)
+                .slice(0, 15)
+                .map((conv) => (
+                  <button
+                    key={conv.id}
+                    type="button"
+                    className={`conv-item ${activeConversationId === conv.id ? "conv-item--active" : ""}`}
+                    onClick={() => loadConversation(conv)}
+                  >
+                    <span className="conv-item__title">{conv.title}</span>
+                    <span className="conv-item__meta">{formatConvDate(conv.updatedAt)}</span>
+                    <span
+                      className="conv-item__delete"
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => deleteConversation(conv.id, e)}
+                      onKeyDown={(e) => e.key === "Enter" && deleteConversation(conv.id, e as unknown as React.MouseEvent)}
+                    >×</span>
+                  </button>
+                ))}
+            </>
+          )}
 
           <span className="sidebar__section-label">Data & Logs</span>
           <button

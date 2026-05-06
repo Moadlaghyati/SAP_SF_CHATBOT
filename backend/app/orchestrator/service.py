@@ -159,6 +159,12 @@ class ChatOrchestrator:
                     }
                 else:
                     local_name_to_id = {e.display_name.lower(): e.employee_id for e in MOCK_EMPLOYEES}
+                # hr_admin gets access to all SAP users (fetched at startup);
+                # other roles are restricted to their configured allowed list.
+                if context.user_role == "hr_admin" and self._sap_all_user_ids:
+                    effective_allowed_ids: list[str] | None = self._sap_all_user_ids
+                else:
+                    effective_allowed_ids = [self._resolve_sap_id(eid) for eid in context.allowed_employee_ids] or None
                 result = await self._sap_absence_agent.handle(
                     message,
                     step_recorder=lambda name, step_status, detail, data=None: self._record_step(
@@ -166,7 +172,7 @@ class ChatOrchestrator:
                     ),
                     acting_sap_user_id=self._resolve_sap_id(context.employee_id) or self._settings.sap_acting_user_id,
                     acting_user_display_name=context.user_display_name,
-                    allowed_employee_ids=[self._resolve_sap_id(eid) for eid in context.allowed_employee_ids] or None,
+                    allowed_employee_ids=effective_allowed_ids,
                     local_name_to_id=local_name_to_id,
                     all_sap_user_ids=self._sap_all_user_ids or None,
                 )
