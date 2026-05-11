@@ -53,6 +53,9 @@ class AppContainer:
         self.sap_employee_id_map: dict[str, str] = {}
         # Populated at startup: all SAP user IDs fetched from the User entity
         self.sap_all_user_ids: list[str] = []
+        # Temporary in-memory store for pending attachment uploads
+        # key = record_key (externalCode), value = { file_bytes, file_name, mime_type }
+        self.pending_attachments: dict[str, dict] = {}
         self._build_sap_agents()
         self.authorization_service = AuthorizationService(self.demo_user_repository)
         self.audit_service = AuditService(self.audit_repository, RedactionService())

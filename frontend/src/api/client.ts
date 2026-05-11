@@ -8,6 +8,7 @@ import type {
   RequestDetail,
   RequestListResponse,
   SwitchLocalModelResponse,
+  UploadAttachmentResponse,
 } from "../types/api";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -71,15 +72,32 @@ export async function switchLocalModel(model: string): Promise<SwitchLocalModelR
   });
 }
 
-export async function sendChat(message: string, demoUserId: string): Promise<ChatResponse> {
+export async function sendChat(message: string, demoUserId: string, sapRecordKey?: string): Promise<ChatResponse> {
   return apiFetch<ChatResponse>(
     "/chat",
     {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, sap_record_key: sapRecordKey ?? null }),
     },
     demoUserId,
   );
+}
+
+export async function uploadAttachment(file: File, demoUserId: string): Promise<UploadAttachmentResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const headers = new Headers();
+  headers.set("X-Demo-User-Id", demoUserId);
+  const response = await fetch(`${API_BASE}/upload-attachment`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Upload failed with status ${response.status}`);
+  }
+  return (await response.json()) as UploadAttachmentResponse;
 }
 
 export async function fetchRequests(): Promise<RequestListResponse> {

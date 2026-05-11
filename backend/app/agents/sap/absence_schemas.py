@@ -129,3 +129,42 @@ SapDepartmentOverlapResult = (
     | SapDepartmentOverlapErrorResult
     | SapDepartmentOverlapNotApplicableResult
 )
+
+
+@dataclass(frozen=True)
+class SapTimeOffRequestSuccessResult:
+    handled: Literal[True]
+    type: Literal["time_off_request"]
+    status: Literal["success"]
+    user_id: str
+    time_type: str
+    time_type_name: str
+    start_date: str
+    end_date: str
+    external_code: str | None = None
+
+
+@dataclass(frozen=True)
+class SapTimeOffRequestClarificationResult:
+    handled: Literal[True]
+    type: Literal["time_off_request"]
+    status: Literal["needs_clarification"]
+    message: str
+    missing_fields: list[str]
+    available_types: list[dict] | None = None
+
+
+@dataclass(frozen=True)
+class SapTimeOffRequestErrorResult:
+    handled: Literal[True]
+    type: Literal["time_off_request"]
+    status: Literal["error"]
+    message: str
+    safe_error_code: str | None = None
+
+
+SapTimeOffRequestResult = (
+    SapTimeOffRequestSuccessResult
+    | SapTimeOffRequestClarificationResult
+    | SapTimeOffRequestErrorResult
+)

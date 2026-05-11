@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ChatMessage } from "../types/api";
 import { StatusPill } from "./StatusPill";
 
@@ -73,6 +74,7 @@ function getAbsenceLabel(code: string | null | undefined): string {
 interface MessageListProps {
   messages: ChatMessage[];
   pendingElapsedSeconds?: number;
+  onUploadAttachment?: (message: ChatMessage, file: File) => void;
 }
 
 interface AbsenceRow {
@@ -497,12 +499,97 @@ function AbsenceTable({ data }: { data: AbsenceData }) {
   );
 }
 
-export function MessageList({ messages, pendingElapsedSeconds = 0 }: MessageListProps) {
+interface PendingRequest {
+  timeType: string;
+  startDate: string;
+  endDate: string;
+  quantityInDays: number | null;
+  approvalStatus: string;
+  externalCode: string | null;
+}
+
+function PendingRequestsTable({ message }: { message: ChatMessage }) {
+  if (!message.minimizedResult) return null;
+  const raw = message.minimizedResult.pending_requests;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const requests = raw as PendingRequest[];
+  const displayName = (message.minimizedResult.display_name as string | null) ?? null;
+
+  return (
+    <div>
+      <p className="absence-summary">
+        Found <strong>{requests.length}</strong> pending leave request{requests.length !== 1 ? "s" : ""}
+        {displayName ? <> for <strong>{displayName}</strong></> : null}
+      </p>
+      <div className="absence-table-wrapper">
+        <table className="absence-table">
+          <thead>
+            <tr>
+              <th>Leave Type</th>
+              <th>Start Date</th>
+              <th>End Date</th>
+              <th>Days</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {requests.map((r, i) => (
+              <tr key={i}>
+                <td>{getAbsenceLabel(r.timeType)}</td>
+                <td>{r.startDate || "—"}</td>
+                <td>{r.endDate || "—"}</td>
+                <td>{r.quantityInDays != null ? r.quantityInDays : "—"}</td>
+                <td>
+                  <span className={`absence-badge ${statusBadgeClass(r.approvalStatus ?? "")}`}>
+                    {r.approvalStatus || "—"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AttachmentUploadButton({ message, onUpload }: { message: ChatMessage; onUpload: (file: File) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        style={{ display: "none" }}
+        accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onUpload(file);
+          e.target.value = "";
+        }}
+      />
+      <button
+        type="button"
+        className="download-btn"
+        style={{ background: "#0070d2", color: "#fff", border: "none" }}
+        onClick={() => inputRef.current?.click()}
+      >
+        📎 Upload Document
+      </button>
+    </>
+  );
+}
+
+export function MessageList({ messages, pendingElapsedSeconds = 0, onUploadAttachment }: MessageListProps) {
   return (
     <>
       {messages.map((message) => {
         const absenceData = extractAbsenceData(message);
         const isComparison = !!(message.minimizedResult?.comparison);
+        const isPendingRequests = message.role === "assistant" && !message.pending &&
+          Array.isArray(message.minimizedResult?.pending_requests);
+        const needsAttachment = message.role === "assistant" && !message.pending &&
+          message.minimizedResult?.needs_attachment === true;
         return (
           <article
             key={message.id}
@@ -536,11 +623,19 @@ export function MessageList({ messages, pendingElapsedSeconds = 0 }: MessageList
                   </button>
                 </>
               ) : null}
+              {needsAttachment && onUploadAttachment ? (
+                <AttachmentUploadButton
+                  message={message}
+                  onUpload={(file) => onUploadAttachment(message, file)}
+                />
+              ) : null}
             </div>
             {isComparison ? (
               <ComparisonView message={message} />
             ) : absenceData ? (
               <AbsenceTable data={absenceData} />
+            ) : isPendingRequests ? (
+              <PendingRequestsTable message={message} />
             ) : (
               <p className="message-card__text">{message.text}</p>
             )}

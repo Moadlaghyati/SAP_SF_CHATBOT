@@ -244,8 +244,8 @@ Intent definitions:
 - leave_balance: user asks about remaining vacation/sick/leave days they have (e.g. "how many days do I have left", "what is my leave balance")
 - upcoming_absences: user asks who is or will be absent in the future (e.g. "who is absent", "who will be absent next week", "show upcoming absences")
 - absence_history: user asks about past absences (e.g. "show my absences last month", "how many days was I absent last year")
-- approval_status: user asks if a leave request is approved or pending (e.g. "is my leave approved", "what is the status of my request")
-- create_absence_request: user wants to submit or request leave (e.g. "I want to request leave", "submit vacation request", "book leave")
+- approval_status: user asks about existing leave requests — their status, pending requests, or approval state (e.g. "is my leave approved", "what is the status of my request", "show pending leave requests", "show my pending requests", "what requests are pending", "show leave requests for X")
+- create_absence_request: user wants to CREATE or SUBMIT a NEW leave request (e.g. "I want to request leave", "submit vacation request", "book leave", "I need 3 days off"). ONLY use this when the user explicitly wants to create something new — never use it when the user is asking to VIEW existing requests.
 - cancel_absence_request: user wants to cancel a leave request (e.g. "cancel my leave", "withdraw my vacation request")
 - team_absences: user asks about their team or department absences (e.g. "who on my team is absent", "show my department absences", "absences in my team")
 - unknown: general question, greeting, or unclear intent
@@ -259,10 +259,16 @@ employee_reference rules:
 Examples:
 - "how many vacation days do I have left?" → {{"intent":"leave_balance","employee_reference":"current_user","clarification_needed":false}}
 - "is my leave request approved?" → {{"intent":"approval_status","employee_reference":"current_user","clarification_needed":false}}
+- "show pending leave requests for Walid Regragi this year" → {{"intent":"approval_status","employee_reference":"specific_employee","employee_name":"Walid Regragi","clarification_needed":false}}
+- "show my pending requests" → {{"intent":"approval_status","employee_reference":"current_user","clarification_needed":false}}
+- "what leave requests are pending?" → {{"intent":"approval_status","employee_reference":"current_user","clarification_needed":false}}
 - "who will be absent next week?" → {{"intent":"upcoming_absences","employee_reference":"unknown","date_range":{{"start":"{next_week_start.isoformat()}","end":"{next_week_end.isoformat()}"}},"clarification_needed":false}}
 - "show absences for my team this month" → {{"intent":"team_absences","employee_reference":"manager_team","date_range":{{"start":"{this_month_start.isoformat()}","end":"{this_month_end.isoformat()}"}},"clarification_needed":false}}
 - "show my absences last month" → {{"intent":"absence_history","employee_reference":"current_user","date_range":{{"start":"{last_month_start.isoformat()}","end":"{last_month_end.isoformat()}"}},"clarification_needed":false}}
-- "I want to request 3 days of annual leave" → {{"intent":"create_absence_request","employee_reference":"current_user","clarification_needed":false}}
+- "I want to request 3 days of annual leave" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"annual leave","clarification_needed":false}}
+- "I want to request marriage leave for Fouzi Lekjaa from June 10 to June 13" → {{"intent":"create_absence_request","employee_reference":"specific_employee","employee_name":"Fouzi Lekjaa","date_range":{{"start":"2026-06-10","end":"2026-06-13"}},"absence_type":"marriage leave","clarification_needed":false}}
+- "submit a sick leave request for next week" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"sick leave","date_range":{{"start":"{next_week_start.isoformat()}","end":"{next_week_end.isoformat()}"}},"clarification_needed":false}}
+- "book 2 days of vacation starting June 5" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"vacation","date_range":{{"start":"2026-06-05","end":"2026-06-06"}},"clarification_needed":false}}
 - "cancel my vacation request" → {{"intent":"cancel_absence_request","employee_reference":"current_user","clarification_needed":false}}
 - "hello, what can you do?" → {{"intent":"unknown","employee_reference":"unknown","clarification_needed":false}}
 
@@ -279,6 +285,8 @@ Rules:
 - If the SAP result is empty or contains no relevant data, say that no matching data was found.
 - Do not mention internal field names, IDs, or JSON keys in your answer.
 - Summarise absence records in plain sentences when there are many.
+- If the intent is "create_absence_request" and the SAP result contains status="submitted", confirm the request was successfully submitted with the leave type, start date, and end date.
+- If the intent is "approval_status", list EVERY entry in "pending_requests" as a separate bullet — show timeType, startDate, endDate, quantityInDays, and approvalStatus for each one. If the list is empty, say there are no pending leave requests. NEVER say you lack access to enterprise systems — the data is already in the SAP result above. SAP dates arrive as "/Date(milliseconds)/" — convert them to readable dates (divide ms by 1000, interpret as Unix timestamp UTC).
 
 User message: {json.dumps(user_message, ensure_ascii=True)}
 

@@ -1,12 +1,19 @@
 export type RequestStatus =
   | "success"
   | "clarification_required"
+  | "needs_attachment"
   | "forbidden"
   | "not_found"
   | "unsupported"
   | "invalid_input"
   | "unavailable"
   | "error";
+
+export interface UploadAttachmentResponse {
+  record_key: string;
+  file_name: string;
+  file_size: number;
+}
 
 export interface DemoUserSummary {
   user_id: string;

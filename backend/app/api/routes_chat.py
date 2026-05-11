@@ -15,4 +15,9 @@ async def chat(
     container: AppContainer = Depends(get_container),
     demo_user_id: str = Depends(get_demo_user_id),
 ) -> ChatResponse:
-    return await container.orchestrator.handle_message(payload.message, demo_user_id)
+    return await container.orchestrator.handle_message(
+        payload.message,
+        demo_user_id,
+        sap_record_key=payload.sap_record_key,
+        pending_attachments=container.pending_attachments,
+    )

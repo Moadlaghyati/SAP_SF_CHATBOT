@@ -10,6 +10,13 @@ from app.schemas.domain import AuditRecord, LocalModelSummary, RequestStatus, Ro
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=3, max_length=1000)
+    sap_record_key: str | None = None
+
+
+class UploadAttachmentResponse(BaseModel):
+    record_key: str
+    file_name: str
+    file_size: int
 
 
 class ChatResponse(BaseModel):

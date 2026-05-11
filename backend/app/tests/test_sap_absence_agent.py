@@ -19,9 +19,9 @@ def sap_settings(**overrides) -> Settings:
     values = {
         "llm_backend": "mock",
         "connector_backend": "mock",
-        "sap_base_url": "https://api012.successfactors.eu/odata/v2",
-        "sap_company_id": "iconunternD",
-        "sap_oauth_token_url": "https://api012.successfactors.eu/oauth/token",
+        "sap_base_url": "https://api.example.successfactors.com/odata/v2",
+        "sap_company_id": "EXAMPLE_COMPANY",
+        "sap_oauth_token_url": "https://api.example.successfactors.com/oauth/token",
         "sap_client_id": "client-from-env",
         "sap_saml_assertion": "assertion-from-env",
     }
@@ -175,7 +175,7 @@ async def test_client_follows_successfactors_pagination() -> None:
                 json={
                     "d": {
                         "results": [{"userId": "1", "startDate": "2026-01-01", "endDate": "2026-01-01"}],
-                        "__next": "https://api012.successfactors.eu/odata/v2/EmployeeTime?$skiptoken=abc",
+                        "__next": "https://api.example.successfactors.com/odata/v2/EmployeeTime?$skiptoken=abc",
                     }
                 },
             )

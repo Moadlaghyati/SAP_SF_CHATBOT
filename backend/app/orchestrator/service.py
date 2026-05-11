@@ -26,6 +26,62 @@ from app.services.time import utc_now
 from app.tools.service import ToolService
 
 
+_TIME_TYPE_MAP: dict[str, tuple[str, str]] = {
+    # Morocco-specific codes (primary for this SAP instance)
+    "annual leave": ("MAR_VACATION", "Vacation"),
+    "annual": ("MAR_VACATION", "Vacation"),
+    "vacation": ("MAR_VACATION", "Vacation"),
+    "congé annuel": ("MAR_VACATION", "Vacation"),
+    "conge annuel": ("MAR_VACATION", "Vacation"),
+    "paid leave": ("MA_P.LEAVE", "Paid leave"),
+    "congé payé": ("MA_P.LEAVE", "Paid leave"),
+    "sick leave": ("MAR_Sick_Leave", "Sick Leave"),
+    "sick": ("MAR_Sick_Leave", "Sick Leave"),
+    "sickness": ("MAR_Sick_Leave", "Sick Leave"),
+    "illness": ("MA_SICK", "Sick leave"),
+    "arrêt maladie": ("MAR_Sick_Leave", "Sick Leave"),
+    "maladie": ("MAR_Sick_Leave", "Sick Leave"),
+    "unpaid leave": ("MA_UNPAIDLEAVE", "Unpaid Leave"),
+    "unpaid": ("MA_UNPAIDLEAVE", "Unpaid Leave"),
+    "sans solde": ("MA_UNPAIDLEAVE", "Unpaid Leave"),
+    "maternity leave": ("MAR_MATLEAV", "Maternity leave"),
+    "maternity": ("MAR_MATLEAV", "Maternity leave"),
+    "maternité": ("MAR_MATLEAV", "Maternity leave"),
+    "paternity leave": ("MAR_PATLEAV", "Paternity leave"),
+    "paternity": ("MAR_PATLEAV", "Paternity leave"),
+    "paternité": ("MAR_PATLEAV", "Paternity leave"),
+    "family reasons": ("MA_FAMREAS", "Family reasons"),
+    "family": ("MA_FAMREAS", "Family reasons"),
+    "famille": ("MA_FAMREAS", "Family reasons"),
+    "marriage leave": ("MAR_MARLEAV", "Marriage Leave"),
+    "marriage": ("MAR_MARLEAV", "Marriage Leave"),
+    "mariage": ("MAR_MARLEAV", "Marriage Leave"),
+    "time off in lieu": ("MAR_DAYOFF", "Day/time off in lieu"),
+    "toil": ("MAR_DAYOFF", "Day/time off in lieu"),
+    "doctor": ("MAR_DOCVT", "Doctor's visit / Medical test"),
+    "doctor appointment": ("MAR_DOCVT", "Doctor's visit / Medical test"),
+    "medical": ("MAR_DOCVT", "Doctor's visit / Medical test"),
+    "remote work": ("MA_REMOTE_WORK", "Remote Work"),
+    "telework": ("MA_REMOTE_WORK", "Remote Work"),
+    "télétravail": ("MA_REMOTE_WORK", "Remote Work"),
+    "justified absence": ("MAR_JUSTABS", "Justified absence"),
+    "force majeure": ("MAR_FORCEMAJEURE", "Force majeure"),
+}
+
+
+def _resolve_time_type(absence_type: str | None) -> tuple[str | None, str]:
+    if not absence_type:
+        return None, ""
+    key = absence_type.lower().strip()
+    match = _TIME_TYPE_MAP.get(key)
+    if match:
+        return match
+    for k, v in _TIME_TYPE_MAP.items():
+        if k in key or key in k:
+            return v
+    return None, ""
+
+
 class ChatOrchestrator:
     def __init__(
         self,
@@ -56,7 +112,13 @@ class ChatOrchestrator:
         # All SAP user IDs fetched at startup — used for workforce queries
         self._sap_all_user_ids: list[str] = sap_all_user_ids if sap_all_user_ids is not None else []
 
-    async def handle_message(self, message: str, user_id: str) -> ChatResponse:
+    async def handle_message(
+        self,
+        message: str,
+        user_id: str,
+        sap_record_key: str | None = None,
+        pending_attachments: dict | None = None,
+    ) -> ChatResponse:
         request_id = f"req_{uuid4().hex[:12]}"
         context = None
         trace = ToolTrace(
@@ -198,10 +260,11 @@ class ChatOrchestrator:
                     structured_intent, acting_sap_id, context, message, trace)
 
             elif structured_intent.intent == "create_absence_request":
-                # TODO: integrate with leave_request_agent when available
-                answer = "Creating absence requests via chat is coming soon. Please use the SAP SuccessFactors portal for now."
-                status = "unsupported"
-                sap_result = {}
+                answer, status, sap_result = await self._handle_create_absence_request(
+                    structured_intent, acting_sap_id, context, message, trace,
+                    sap_record_key=sap_record_key,
+                    pending_attachments=pending_attachments,
+                )
 
             elif structured_intent.intent == "cancel_absence_request":
                 # TODO: implement cancel via SAP EmployeeTime DELETE/PATCH
@@ -398,6 +461,14 @@ class ChatOrchestrator:
             return answer, "unsupported", {}
 
         user_id = acting_sap_id
+        if intent.employee_reference == "specific_employee" and intent.employee_name:
+            try:
+                resolved = await sap_client.resolve_user_id_by_name(intent.employee_name)
+                if resolved:
+                    user_id = resolved
+            except Exception:
+                pass
+
         self._record_step(trace, "sap_approval_status", "running", "Fetching pending leave requests.", {"user_id": user_id})
         try:
             requests = await sap_client.get_pending_leave_requests(user_id=user_id)
@@ -405,7 +476,8 @@ class ChatOrchestrator:
             LOGGER.warning("[SAP] get_pending_leave_requests failed: %s", exc)
             requests = []
 
-        sap_result = {"user_id": user_id, "display_name": context.user_display_name, "pending_requests": requests}
+        display_name = intent.employee_name.title() if (intent.employee_reference == "specific_employee" and intent.employee_name) else context.user_display_name
+        sap_result = {"user_id": user_id, "display_name": display_name, "pending_requests": requests}
         self._record_step(trace, "sap_approval_status", "completed", "Pending requests fetched.", {"count": len(requests)})
 
         answer = await self._generate_structured_answer(message, intent.model_dump(), sap_result)
@@ -452,6 +524,168 @@ class ChatOrchestrator:
             return answer, "success", sap_result
         else:
             return self._sap_result_to_answer(result), self._sap_result_to_request_status(result), sap_result
+
+    async def _handle_create_absence_request(
+        self, intent, acting_sap_id, context, message, trace,
+        sap_record_key: str | None = None,
+        pending_attachments: dict | None = None,
+    ):
+        sap_client = self._sap_client or getattr(self._sap_absence_agent, "_client", None)
+        if not sap_client or not hasattr(sap_client, "post_time_off_request"):
+            return "Creating absence requests is only available when connected to SAP SuccessFactors.", "unsupported", {}
+
+        user_id = acting_sap_id
+        if intent.employee_reference == "specific_employee" and intent.employee_name:
+            try:
+                resolved = await sap_client.resolve_user_id_by_name(intent.employee_name)
+                if resolved:
+                    user_id = resolved
+            except Exception:
+                pass
+
+        if not user_id:
+            return (
+                "I need your SAP user ID to submit a leave request. Please ask your administrator to configure SAP_ACTING_USER_ID.",
+                "clarification_required",
+                {},
+            )
+
+        start_date = intent.date_range.get("start")
+        end_date = intent.date_range.get("end")
+
+        if not start_date or not end_date:
+            return (
+                "Please specify the start and end dates for your leave request, e.g. 'I want to request leave from June 5 to June 7'.",
+                "clarification_required",
+                {},
+            )
+
+        try:
+            from datetime import date as _date
+            _date.fromisoformat(start_date)
+            _date.fromisoformat(end_date)
+        except (ValueError, TypeError):
+            return (
+                f"The dates '{start_date}' / '{end_date}' are not valid. Please use a clear format like 'June 5 to June 7'.",
+                "clarification_required",
+                {},
+            )
+
+        time_type_code, time_type_name = _resolve_time_type(intent.absence_type)
+
+        # LLM sometimes doesn't populate absence_type — fall back to scanning the raw message
+        if not time_type_code:
+            time_type_code, time_type_name = _resolve_time_type(message)
+
+        if not time_type_code:
+            try:
+                available = await sap_client.get_time_types()
+            except Exception:
+                available = []
+            if available:
+                type_list = "\n".join(f"• {t['name']} (code: {t['code']})" for t in available[:10])
+                return (
+                    f"What type of leave would you like to request? Available types:\n{type_list}",
+                    "clarification_required",
+                    {"available_types": available},
+                )
+            return (
+                "Please specify the type of leave (e.g. annual leave, sickness, unpaid leave, maternity leave).",
+                "clarification_required",
+                {},
+            )
+
+        # Use the upload record key as externalCode so the SAP attachment can link to this time record
+        pre_external_code = sap_record_key if sap_record_key else None
+        has_attachment = bool(sap_record_key and pending_attachments and sap_record_key in (pending_attachments or {}))
+
+        self._record_step(trace, "sap_time_off_request", "running", "Submitting time off request to SAP SuccessFactors.", {
+            "user_id": user_id, "time_type": time_type_code, "start_date": start_date, "end_date": end_date,
+            "has_attachment": has_attachment,
+        })
+
+        # When an attachment is provided: upload it first, then create EmployeeTime.
+        # When no attachment: try to create EmployeeTime — if SAP rejects with "needs attachment", surface that to the user.
+        attachment_id = None
+        if has_attachment and pending_attachments and sap_record_key:
+            att = pending_attachments[sap_record_key]
+            self._record_step(trace, "sap_attachment_upload", "running", "Uploading attachment to SAP.", {"file_name": att.get("file_name")})
+            # Upload as the authenticated service account (acting_sap_id / token holder).
+            # SAP validates that the attachment's userId matches the token user, not the target employee.
+            upload_user_id = acting_sap_id or user_id
+            try:
+                attachment_id = await sap_client.upload_attachment(
+                    file_bytes=att["file_bytes"],
+                    file_name=att["file_name"],
+                    mime_type=att["mime_type"],
+                    user_id=upload_user_id,
+                    document_entity_id=pre_external_code or f"CHAT_{user_id}",
+                )
+                self._record_step(trace, "sap_attachment_upload", "completed", "Attachment uploaded.", {"attachment_id": attachment_id})
+            except ConnectorUnavailableError as exc:
+                self._record_step(trace, "sap_attachment_upload", "error", str(exc))
+                LOGGER.warning("[SAP] Attachment upload failed: %s", exc)
+                return (
+                    f"The document upload to SAP failed: {exc}. Please try uploading again or contact your HR administrator.",
+                    "error",
+                    {"error": str(exc)},
+                )
+
+        try:
+            response = await sap_client.post_time_off_request(
+                user_id=user_id,
+                time_type=time_type_code,
+                start_date=start_date,
+                end_date=end_date,
+                external_code=pre_external_code,
+                attachment_id=attachment_id,
+            )
+            final_code = (
+                response.get("d", {}).get("externalCode")
+                or response.get("externalCode")
+                or pre_external_code
+            )
+
+            sap_result = {
+                "user_id": user_id,
+                "time_type": time_type_code,
+                "time_type_name": time_type_name,
+                "start_date": start_date,
+                "end_date": end_date,
+                "external_code": final_code,
+                "attachment_id": attachment_id,
+                "status": "submitted",
+            }
+            self._record_step(trace, "sap_time_off_request", "completed", "Time off request submitted.", sap_result)
+            # Clean up consumed pending attachment
+            if sap_record_key and pending_attachments and sap_record_key in pending_attachments:
+                del pending_attachments[sap_record_key]
+            answer = await self._generate_structured_answer(message, intent.model_dump(), sap_result)
+            return answer, "success", sap_result
+        except ConnectorUnavailableError as exc:
+            err_str = str(exc)
+            err_lower = err_str.lower()
+            needs_doc = "attachment" in err_lower or "justificatif" in err_lower or "document" in err_lower
+            if needs_doc and not has_attachment:
+                sap_result = {
+                    "status": "needs_attachment",
+                    "needs_attachment": True,
+                    "pending_time_type": time_type_code,
+                    "pending_time_type_name": time_type_name,
+                    "pending_start_date": start_date,
+                    "pending_end_date": end_date,
+                    "user_id": user_id,
+                    "error": err_str,
+                }
+                self._record_step(trace, "sap_time_off_request", "needs_attachment", err_str)
+                answer = (
+                    f"This leave type (**{time_type_name}**) requires a supporting document. "
+                    f"Please upload an attachment (e.g. marriage certificate, medical note) "
+                    f"and I will re-submit your request automatically."
+                )
+                return answer, "clarification_required", sap_result
+            self._record_step(trace, "sap_time_off_request", "error", err_str)
+            return err_str, "error", {}
 
     async def _handle_general_chat_intent(self, message, context, trace):
         self._record_step(trace, "general_chat", "running", "Handling as general conversation.")

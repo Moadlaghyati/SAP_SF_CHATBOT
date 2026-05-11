@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -11,6 +13,20 @@ from app.config.settings import Settings
 from app.services.errors import ConnectorUnavailableError
 
 LOGGER = logging.getLogger(__name__)
+
+import re as _re
+
+def _parse_sap_date(value: object) -> str | None:
+    """Convert SAP OData v2 /Date(ms)/ format to YYYY-MM-DD ISO string."""
+    if not value:
+        return None
+    if isinstance(value, str):
+        m = _re.match(r"/Date\((-?\d+)\)/", value)
+        if m:
+            ms = int(m.group(1))
+            return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        return value  # already ISO or unknown — return as-is
+    return str(value)
 
 
 class SapSuccessFactorsClient:
@@ -345,6 +361,164 @@ class SapSuccessFactorsClient:
         except Exception:
             return False
 
+    async def get_time_types(self) -> list[dict]:
+        """Fetch active ABSENCE TimeType codes from SAP."""
+        self._ensure_base_url()
+        query = urlencode(
+            {"$format": "json",
+             "$select": "externalCode,externalName_en_US,externalName_defaultValue,category,unit,mdfSystemStatus",
+             "$top": "100"},
+            quote_via=quote,
+        )
+        url = f"{self._settings.sap_base_url.rstrip('/')}/TimeType?{query}"
+        try:
+            payload = await self._get_json(url)
+        except ConnectorUnavailableError:
+            return []
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list):
+            return []
+        types = [
+            {
+                "code": r.get("externalCode"),
+                "name": r.get("externalName_en_US") or r.get("externalName_defaultValue") or r.get("externalCode"),
+                "unit": r.get("unit"),
+            }
+            for r in results
+            if isinstance(r, dict)
+            and r.get("mdfSystemStatus") == "A"
+            and r.get("category") == "ABSENCE"
+            and r.get("externalCode")
+        ]
+        # Prefer Morocco-specific codes (MA_ / MAR_ prefix) for this instance
+        ma_types = [t for t in types if str(t["code"]).startswith(("MA_", "MAR_"))]
+        return ma_types if ma_types else types
+
+    async def post_time_off_request(
+        self, *, user_id: str, time_type: str, start_date: str, end_date: str,
+        external_code: str | None = None, attachment_id: int | None = None,
+    ) -> dict:
+        """POST a new EmployeeTime record to SAP SuccessFactors."""
+        self._ensure_base_url()
+        url = f"{self._settings.sap_base_url.rstrip('/')}/EmployeeTime"
+
+        def _to_sap_date(iso_date: str) -> str:
+            dt = datetime.strptime(iso_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return f"/Date({int(dt.timestamp() * 1000)})/"
+
+        if not external_code:
+            external_code = f"CHAT_{uuid.uuid4().hex[:12].upper()}"
+        pl_key = (
+            "PickListValueV2("
+            "PickListV2_effectiveStartDate=datetime'1900-01-01T00:00:00',"
+            "PickListV2_id='sicknessReason',"
+            "externalCode='1')"
+        )
+        body = {
+            "userId": user_id,
+            "timeType": time_type,
+            "startDate": _to_sap_date(start_date),
+            "endDate": _to_sap_date(end_date),
+            "externalCode": external_code,
+            "cust_fitNote": attachment_id is not None,
+            "cust_reason": "1",
+            "timeTypeNav": {"__metadata": {"uri": f"TimeType('{time_type}')"}},
+            "userIdNav": {"__metadata": {"uri": f"User('{user_id}')"}},
+            "cust_reasonNav": {"__metadata": {"uri": pl_key}},
+        }
+        if attachment_id is not None:
+            base = self._settings.sap_base_url.rstrip("/")
+            body["cust_attachmentNav"] = {"__metadata": {"uri": f"{base}/Attachment({attachment_id})"}}
+        token = await self._auth_service.get_access_token()
+        try:
+            response = await self._client.post(
+                url,
+                json=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            response.raise_for_status()
+            try:
+                return response.json()
+            except ValueError:
+                return {"externalCode": external_code}
+        except httpx.HTTPStatusError as exc:
+            try:
+                err_body = exc.response.json()
+                err_msg = err_body.get("error", {}).get("message", {}).get("value", exc.response.text)
+            except Exception:
+                err_msg = exc.response.text
+            if exc.response.status_code in {401, 403}:
+                raise ConnectorUnavailableError("SAP API authorization failed.") from exc
+            raise ConnectorUnavailableError(f"SAP request failed: {err_msg}") from exc
+        except httpx.TimeoutException as exc:
+            raise ConnectorUnavailableError("SAP API request timed out.") from exc
+        except httpx.TransportError as exc:
+            raise ConnectorUnavailableError("SAP API request failed: endpoint unavailable.") from exc
+
+    async def upload_attachment(
+        self,
+        *,
+        file_bytes: bytes,
+        file_name: str,
+        mime_type: str,
+        user_id: str,
+        document_entity_id: str,
+    ) -> int:
+        """Upload a file to SAP Attachment entity and return the attachmentId.
+
+        document_entity_id should be the externalCode that will be used for the
+        EmployeeTime record so SAP can link attachment → time-off request.
+        """
+        self._ensure_base_url()
+        import base64
+        url = f"{self._settings.sap_base_url.rstrip('/')}/Attachment"
+        body = {
+            "fileName": file_name,
+            "fileContent": base64.b64encode(file_bytes).decode("ascii"),
+            "module": self._settings.sap_attachment_module,
+            "documentEntityId": document_entity_id,
+            "userId": user_id,
+            "deletable": True,
+            "viewable": True,
+        }
+        token = await self._auth_service.get_access_token()
+        try:
+            response = await self._client.post(
+                url,
+                json=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            attachment_id = (
+                data.get("d", {}).get("attachmentId")
+                or data.get("attachmentId")
+            )
+            if attachment_id is None:
+                raise ConnectorUnavailableError("SAP attachment upload succeeded but returned no attachmentId.")
+            return int(attachment_id)
+        except httpx.HTTPStatusError as exc:
+            try:
+                err_body = exc.response.json()
+                err_msg = err_body.get("error", {}).get("message", {}).get("value", exc.response.text)
+            except Exception:
+                err_msg = exc.response.text
+            if exc.response.status_code in {401, 403}:
+                raise ConnectorUnavailableError("SAP API authorization failed.") from exc
+            raise ConnectorUnavailableError(f"SAP attachment upload failed: {err_msg}") from exc
+        except httpx.TimeoutException as exc:
+            raise ConnectorUnavailableError("SAP attachment upload timed out.") from exc
+        except httpx.TransportError as exc:
+            raise ConnectorUnavailableError("SAP attachment upload failed: endpoint unavailable.") from exc
+
     async def get_leave_balance(self, *, user_id: str) -> list[dict]:
         """Fetch EmpTimeAccountBalance for a user."""
         self._ensure_base_url()
@@ -401,8 +575,8 @@ class SapSuccessFactorsClient:
         return [
             {
                 "timeType": r.get("timeType"),
-                "startDate": r.get("startDate"),
-                "endDate": r.get("endDate"),
+                "startDate": _parse_sap_date(r.get("startDate")),
+                "endDate": _parse_sap_date(r.get("endDate")),
                 "quantityInDays": r.get("quantityInDays"),
                 "approvalStatus": r.get("approvalStatus"),
                 "externalCode": r.get("externalCode"),

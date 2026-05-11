@@ -11,6 +11,7 @@ import {
   sendChat,
   switchDemoUser,
   switchLocalModel,
+  uploadAttachment,
 } from "./api/client";
 import { AuditViewer } from "./components/AuditViewer";
 import { ChatComposer } from "./components/ChatComposer";
@@ -553,6 +554,52 @@ function App() {
     }
   }
 
+  async function handleUploadAndResubmit(triggerMessage: ChatMessage, file: File) {
+    if (loading) return;
+    // The original request text is the last user message before this assistant message
+    const msgIndex = messages.findIndex((m) => m.id === triggerMessage.id);
+    const rawText = msgIndex > 0
+      ? [...messages].slice(0, msgIndex).reverse().find((m) => m.role === "user")?.text ?? ""
+      : "";
+    // Strip any previously prepended "[Attachment: ...]" prefix so re-attempts send a clean message
+    const originalText = rawText.replace(/^\[Attachment:[^\]]+\]\s*/, "");
+    if (!originalText) return;
+
+    setLoading(true);
+    const pendingMessageId = `assistant-pending-${Date.now()}`;
+    setPendingRequestStartedAt(Date.now());
+    setBootstrapError(null);
+
+    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: "user", text: `[Attachment: ${file.name}] ${originalText}` };
+    const pendingAssistantMessage: ChatMessage = {
+      id: pendingMessageId,
+      role: "assistant",
+      text: `Uploading ${file.name} and re-submitting request...`,
+      pending: true,
+    };
+    setMessages((current) => [...current, userMessage, pendingAssistantMessage]);
+
+    try {
+      const uploaded = await uploadAttachment(file, activeUserId);
+      const response = await sendChat(originalText, activeUserId, uploaded.record_key);
+      applyChatResponse(response, pendingMessageId);
+      setInputValue("");
+      await refreshData(response.request_id);
+    } catch (error) {
+      const failureMessage =
+        error instanceof Error ? error.message : "The request failed before a response was returned.";
+      setMessages((current) =>
+        current.map((m) =>
+          m.id === pendingMessageId ? { ...m, text: failureMessage, status: "error", pending: false } : m,
+        ),
+      );
+      setBootstrapError(failureMessage);
+    } finally {
+      setLoading(false);
+      setPendingRequestStartedAt(null);
+    }
+  }
+
   async function handleSapLogin() {
     const uid = sapLoginInput.trim();
     if (!uid) return;
@@ -961,7 +1008,7 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
         {activeTab === "chat" && !showWelcome && (
           <div className="chat-view">
             <div className="chat-view__messages">
-              <MessageList messages={messages} pendingElapsedSeconds={pendingElapsedSeconds} />
+              <MessageList messages={messages} pendingElapsedSeconds={pendingElapsedSeconds} onUploadAttachment={(msg, file) => void handleUploadAndResubmit(msg, file)} />
               <div ref={messagesEndRef} />
             </div>
             <div className="chat-view__input">

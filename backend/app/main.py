@@ -11,6 +11,7 @@ from app.api.routes_chat import router as chat_router
 from app.api.routes_demo import router as demo_router
 from app.api.routes_health import router as health_router
 from app.api.routes_requests import router as requests_router
+from app.api.routes_upload import router as upload_router
 from app.config.settings import get_settings
 from app.services.container import AppContainer
 
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_router, prefix=settings.api_prefix)
     app.include_router(health_router, prefix=settings.api_prefix)
     app.include_router(demo_router, prefix=settings.api_prefix)
+    app.include_router(upload_router, prefix=settings.api_prefix)
     return app
 
 

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     sap_client_id: str | None = None
     sap_client_secret: str | None = None
     sap_saml_assertion: str | None = None
+    sap_attachment_module: str = "DEFAULT"
 
     @model_validator(mode="after")
     def validate_local_only_backends(self) -> "Settings":
