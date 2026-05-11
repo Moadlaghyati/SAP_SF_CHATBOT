@@ -740,11 +740,11 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
             Chat AI
           </button>
 
-          {conversations.filter((c) => c.userId === activeUserId).length > 0 && (
+          {conversations.filter((c) => isSapMode || c.userId === activeUserId).length > 0 && (
             <>
               <span className="sidebar__section-label sidebar__section-label--recents">Recents</span>
               {conversations
-                .filter((c) => c.userId === activeUserId)
+                .filter((c) => isSapMode || c.userId === activeUserId)
                 .slice(0, 15)
                 .map((conv) => (
                   <button
