@@ -6,9 +6,9 @@ import httpx
 
 from app.config.settings import Settings
 from app.llm.base import LocalLLMClient
-from app.llm.prompts import build_absence_extraction_prompt, build_answer_prompt, build_extraction_prompt
+from app.llm.prompts import build_absence_extraction_prompt, build_answer_prompt, build_extraction_prompt, build_intent_analysis_prompt, build_structured_answer_prompt
 from app.schemas.domain import LocalModelSummary
-from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion
+from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion, StructuredIntent
 from app.services.errors import LocalLLMUnavailableError, StructuredOutputError
 
 
@@ -92,6 +92,48 @@ class OllamaClient(LocalLLMClient):
         if not answer:
             raise StructuredOutputError("The local model returned an empty final answer.")
         return answer
+
+    async def analyze_intent(self, question: str, current_date: date, acting_user_display_name: str | None = None) -> StructuredIntent:
+        from app.schemas.llm import StructuredIntent
+        prompt = build_intent_analysis_prompt(question, current_date, acting_user_display_name)
+        try:
+            response = await self._client.post(
+                "/api/generate",
+                json={
+                    "model": self._settings.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 300},
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise self._map_http_error(exc) from exc
+        raw = response.json().get("response", "").strip()
+        try:
+            return StructuredIntent.model_validate_json(raw)
+        except Exception:
+            return StructuredIntent(intent="unknown", clarification_needed=False)
+
+    async def generate_structured_answer(self, user_message: str, intent_json: dict, sap_result: dict) -> str:
+        from app.llm.prompts import build_structured_answer_prompt
+        prompt = build_structured_answer_prompt(user_message, intent_json, sap_result)
+        try:
+            response = await self._client.post(
+                "/api/generate",
+                json={
+                    "model": self._settings.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 150},
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise self._map_http_error(exc) from exc
+        answer = response.json().get("response", "").strip()
+        return answer or "No matching absence information was found."
 
     async def health_check(self) -> tuple[bool, str]:
         try:

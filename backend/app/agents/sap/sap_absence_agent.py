@@ -52,6 +52,18 @@ class SapAbsenceAgent:
             if not end_date:
                 end_date = date(current_date.year, 12, 31).isoformat()
 
+            # Validate that the extracted dates are calendar-valid
+            for _label, _ds in (("start date", start_date), ("end date", end_date)):
+                try:
+                    date.fromisoformat(_ds)
+                except (ValueError, TypeError):
+                    return SapAbsenceResult(
+                        handled=True,
+                        status="needs_clarification",
+                        message=f"The {_label} '{_ds}' is not a valid calendar date. Please check the date and try again (e.g. June has only 30 days).",
+                        absences=[],
+                    )
+
             def _clean(val: str | None) -> str | None:
                 if not val or val.strip().lower() in ("null", "none", ""):
                     return None

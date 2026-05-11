@@ -194,3 +194,96 @@ User question: {json.dumps(payload.user_message or "", ensure_ascii=True)}
 Payload:
 {json.dumps(payload.model_dump(mode="json"), ensure_ascii=True)}
 """.strip()
+
+
+def build_intent_analysis_prompt(question: str, current_date: date, acting_user_display_name: str | None = None) -> str:
+    today = current_date
+    days_since_monday = today.weekday()
+    this_week_start = today - timedelta(days=days_since_monday)
+    this_week_end = this_week_start + timedelta(days=6)
+    next_week_start = this_week_start + timedelta(days=7)
+    next_week_end = next_week_start + timedelta(days=6)
+    this_month_start = today.replace(day=1)
+    import calendar as _cal2
+    this_month_end = today.replace(day=_cal2.monthrange(today.year, today.month)[1])
+    if today.month == 1:
+        last_month_start = date(today.year - 1, 12, 1)
+        last_month_end = date(today.year - 1, 12, 31)
+    else:
+        last_month_end = this_month_start - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+
+    user_context = f"\nThe acting user is: {acting_user_display_name}." if acting_user_display_name else ""
+
+    return f"""You are an HR assistant intent classifier. Analyze the user question and return ONLY valid JSON matching the schema below.{user_context}
+
+Today is {today.isoformat()}.
+
+Return ONLY valid JSON with this exact schema:
+{{
+  "intent": "leave_balance|upcoming_absences|absence_history|approval_status|create_absence_request|cancel_absence_request|team_absences|unknown",
+  "employee_reference": "current_user|manager_team|specific_employee|unknown",
+  "employee_name": "string or null",
+  "date_range": {{"start": "YYYY-MM-DD or null", "end": "YYYY-MM-DD or null"}},
+  "absence_type": "string or null",
+  "required_api": "string or null",
+  "extracted_parameters": {{}},
+  "clarification_needed": false,
+  "clarification_question": "string or null"
+}}
+
+Date reference table — use these exact values:
+- "today" → {today.isoformat()} to {today.isoformat()}
+- "this week" → {this_week_start.isoformat()} to {this_week_end.isoformat()}
+- "next week" → {next_week_start.isoformat()} to {next_week_end.isoformat()}
+- "this month" → {this_month_start.isoformat()} to {this_month_end.isoformat()}
+- "last month" → {last_month_start.isoformat()} to {last_month_end.isoformat()}
+- "this year" → {today.year}-01-01 to {today.year}-12-31
+
+Intent definitions:
+- leave_balance: user asks about remaining vacation/sick/leave days they have (e.g. "how many days do I have left", "what is my leave balance")
+- upcoming_absences: user asks who is or will be absent in the future (e.g. "who is absent", "who will be absent next week", "show upcoming absences")
+- absence_history: user asks about past absences (e.g. "show my absences last month", "how many days was I absent last year")
+- approval_status: user asks if a leave request is approved or pending (e.g. "is my leave approved", "what is the status of my request")
+- create_absence_request: user wants to submit or request leave (e.g. "I want to request leave", "submit vacation request", "book leave")
+- cancel_absence_request: user wants to cancel a leave request (e.g. "cancel my leave", "withdraw my vacation request")
+- team_absences: user asks about their team or department absences (e.g. "who on my team is absent", "show my department absences", "absences in my team")
+- unknown: general question, greeting, or unclear intent
+
+employee_reference rules:
+- current_user: question uses "my", "I", "me", "myself" — about the acting user's own data
+- specific_employee: a named person is mentioned in the question
+- manager_team: question uses "my team", "my department", "my direct reports", "our department", "our team"
+- unknown: unclear who the question is about
+
+Examples:
+- "how many vacation days do I have left?" → {{"intent":"leave_balance","employee_reference":"current_user","clarification_needed":false}}
+- "is my leave request approved?" → {{"intent":"approval_status","employee_reference":"current_user","clarification_needed":false}}
+- "who will be absent next week?" → {{"intent":"upcoming_absences","employee_reference":"unknown","date_range":{{"start":"{next_week_start.isoformat()}","end":"{next_week_end.isoformat()}"}},"clarification_needed":false}}
+- "show absences for my team this month" → {{"intent":"team_absences","employee_reference":"manager_team","date_range":{{"start":"{this_month_start.isoformat()}","end":"{this_month_end.isoformat()}"}},"clarification_needed":false}}
+- "show my absences last month" → {{"intent":"absence_history","employee_reference":"current_user","date_range":{{"start":"{last_month_start.isoformat()}","end":"{last_month_end.isoformat()}"}},"clarification_needed":false}}
+- "I want to request 3 days of annual leave" → {{"intent":"create_absence_request","employee_reference":"current_user","clarification_needed":false}}
+- "cancel my vacation request" → {{"intent":"cancel_absence_request","employee_reference":"current_user","clarification_needed":false}}
+- "hello, what can you do?" → {{"intent":"unknown","employee_reference":"unknown","clarification_needed":false}}
+
+Question: {question}""".strip()
+
+
+def build_structured_answer_prompt(user_message: str, intent_json: dict, sap_result: dict) -> str:
+    return f"""You are a helpful HR assistant. Answer the user's question using ONLY the SAP data provided below.
+
+Rules:
+- Answer in the same language the user used.
+- Be short, professional, and friendly.
+- Do NOT invent any data not present in the SAP result.
+- If the SAP result is empty or contains no relevant data, say that no matching data was found.
+- Do not mention internal field names, IDs, or JSON keys in your answer.
+- Summarise absence records in plain sentences when there are many.
+
+User message: {json.dumps(user_message, ensure_ascii=True)}
+
+Detected intent: {json.dumps(intent_json, ensure_ascii=True)}
+
+SAP data: {json.dumps(sap_result, ensure_ascii=True)}
+
+Answer:""".strip()

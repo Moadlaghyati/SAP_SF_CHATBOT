@@ -345,6 +345,72 @@ class SapSuccessFactorsClient:
         except Exception:
             return False
 
+    async def get_leave_balance(self, *, user_id: str) -> list[dict]:
+        """Fetch EmpTimeAccountBalance for a user."""
+        self._ensure_base_url()
+        sap_filter = f"userId eq '{_escape_odata_string(user_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter,
+             "$select": "userId,timeAccountType,balance,unit,bookingStartDate,bookingEndDate"},
+            quote_via=quote,
+        )
+        url = f"{self._settings.sap_base_url.rstrip('/')}/EmpTimeAccountBalance?{query}"
+        LOGGER.debug("[SAP] get_leave_balance user_id=%s", user_id)
+        try:
+            payload = await self._get_json(url)
+        except ConnectorUnavailableError as exc:
+            LOGGER.warning("[SAP] get_leave_balance failed: %s", exc)
+            return []
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list):
+            return []
+        return [
+            {
+                "accountType": r.get("timeAccountType"),
+                "balance": r.get("balance"),
+                "unit": r.get("unit", "day(s)"),
+                "bookingStart": r.get("bookingStartDate"),
+                "bookingEnd": r.get("bookingEndDate"),
+            }
+            for r in results
+            if isinstance(r, dict)
+        ]
+
+    async def get_pending_leave_requests(self, *, user_id: str) -> list[dict]:
+        """Fetch pending EmployeeTime records for a user."""
+        self._ensure_base_url()
+        sap_filter = (
+            f"userId eq '{_escape_odata_string(user_id)}' "
+            f"and approvalStatus eq 'PENDING'"
+        )
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter,
+             "$select": "userId,timeType,startDate,endDate,quantityInDays,approvalStatus,externalCode"},
+            quote_via=quote,
+        )
+        url = f"{self._settings.sap_base_url.rstrip('/')}/EmployeeTime?{query}"
+        LOGGER.debug("[SAP] get_pending_leave_requests user_id=%s", user_id)
+        try:
+            payload = await self._get_json(url)
+        except ConnectorUnavailableError as exc:
+            LOGGER.warning("[SAP] get_pending_leave_requests failed: %s", exc)
+            return []
+        results = payload.get("d", {}).get("results", [])
+        if not isinstance(results, list):
+            return []
+        return [
+            {
+                "timeType": r.get("timeType"),
+                "startDate": r.get("startDate"),
+                "endDate": r.get("endDate"),
+                "quantityInDays": r.get("quantityInDays"),
+                "approvalStatus": r.get("approvalStatus"),
+                "externalCode": r.get("externalCode"),
+            }
+            for r in results
+            if isinstance(r, dict)
+        ]
+
     async def _get_json(self, url: str) -> dict:
         token = await self._auth_service.get_access_token()
         try:

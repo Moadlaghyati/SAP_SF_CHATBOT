@@ -786,6 +786,12 @@ button, textarea, select { font: inherit; }
   color: var(--accent);
 }
 
+.response-duration {
+  font-size: 0.75rem;
+  color: var(--text-muted, #9ca3af);
+  margin-left: 2px;
+}
+
 .pending-indicator::before {
   content: "";
   width: 7px;

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 
 from app.schemas.domain import LocalModelSummary
-from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion
+from app.schemas.llm import AbsenceExtractionResult, AnswerGenerationPayload, ParsedQuestion, StructuredIntent
 
 
 class LocalLLMClient(ABC):
@@ -20,6 +20,10 @@ class LocalLLMClient(ABC):
 
     @abstractmethod
     async def generate_answer(self, payload: AnswerGenerationPayload) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def analyze_intent(self, question: str, current_date: date, acting_user_display_name: str | None = None) -> StructuredIntent:
         raise NotImplementedError
 
     @abstractmethod

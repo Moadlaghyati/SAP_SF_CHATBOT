@@ -148,6 +148,7 @@ export interface ChatMessage {
   requestId?: string;
   pending?: boolean;
   minimizedResult?: Record<string, unknown> | null;
+  durationMs?: number | null;
 }
 
 export interface Conversation {

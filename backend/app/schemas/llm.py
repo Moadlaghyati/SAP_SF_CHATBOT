@@ -56,3 +56,15 @@ class AbsenceExtractionResult(BaseModel):
     end_date: str | None = None
     needs_clarification: bool = False
     clarification_message: str | None = None
+
+
+class StructuredIntent(BaseModel):
+    intent: str = "unknown"
+    employee_reference: str = "unknown"
+    employee_name: str | None = None
+    date_range: dict = Field(default_factory=lambda: {"start": None, "end": None})
+    absence_type: str | None = None
+    required_api: str | None = None
+    extracted_parameters: dict = Field(default_factory=dict)
+    clarification_needed: bool = False
+    clarification_question: str | None = None

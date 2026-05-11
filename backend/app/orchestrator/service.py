@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import asdict, is_dataclass
 from datetime import date
 from uuid import uuid4
 
-from app.agents.sap.absence_intent import detect_absence_intent
+LOGGER = logging.getLogger(__name__)
+
 from app.agents.sap.absence_schemas import SapAbsenceResult, SapDepartmentOverlapResult
 from app.connectors.mock_data import MOCK_EMPLOYEES
 from pydantic import ValidationError
@@ -38,6 +40,7 @@ class ChatOrchestrator:
         dept_overlap_agent=None,
         sap_employee_id_map: dict[str, str] | None = None,
         sap_all_user_ids: list[str] | None = None,
+        sap_client=None,
     ):
         self._settings = settings
         self._authorization_service = authorization_service
@@ -47,6 +50,7 @@ class ChatOrchestrator:
         self._llm_client = llm_client
         self._sap_absence_agent = sap_absence_agent
         self._dept_overlap_agent = dept_overlap_agent
+        self._sap_client = sap_client
         # Shared reference to the container's map — populated at startup
         self._sap_employee_id_map: dict[str, str] = sap_employee_id_map if sap_employee_id_map is not None else {}
         # All SAP user IDs fetched at startup — used for workforce queries
@@ -134,393 +138,95 @@ class ChatOrchestrator:
                         context_user=context,
                     )
 
-            sap_absence_precheck = detect_absence_intent(message)
+            # ── Step 1: LLM Intent Analysis ──────────────────────────────────────────────
+            acting_sap_id = self._resolve_sap_id(context.employee_id) or self._settings.sap_acting_user_id
+            self._record_step(trace, "intent_analysis", "running", "Analyzing intent with LLM (step 1 of 2).")
+            structured_intent = await self._llm_client.analyze_intent(
+                message,
+                current_date=date.today(),
+                acting_user_display_name=context.user_display_name,
+            )
+            LOGGER.info(
+                "[Intent] intent=%s employee_ref=%s required_api=%s clarification=%s",
+                structured_intent.intent, structured_intent.employee_reference,
+                structured_intent.required_api, structured_intent.clarification_needed,
+            )
             self._record_step(
-                trace,
-                "absence_intent_precheck",
-                "completed",
-                "Checked whether the message explicitly asks for absence, leave, PTO, vacation, holiday, sick leave, or time-off data.",
+                trace, "intent_analysis", "completed",
+                f"Detected intent: {structured_intent.intent}",
                 {
-                    "should_handle": sap_absence_precheck.should_handle,
-                    "confidence": sap_absence_precheck.confidence,
-                    "reason": sap_absence_precheck.reason,
-                    "active_connector": self._tool_service.connector_backend,
+                    "intent": structured_intent.intent,
+                    "employee_reference": structured_intent.employee_reference,
+                    "required_api": structured_intent.required_api,
+                    "clarification_needed": structured_intent.clarification_needed,
                 },
             )
-            if self._sap_absence_agent is not None and sap_absence_precheck.should_handle:
-                self._record_step(trace, "sap_absence_agent", "running", "Delegated request to the dedicated SAP Absence Agent.")
-                if self._settings.connector_backend == "successfactors":
-                    # Use real SAP userIds resolved at startup; fall back to the
-                    # mock employee_id for any employee whose name didn't match in
-                    # the SAP User entity (e.g. different name casing or spelling).
-                    local_name_to_id = {
-                        e.display_name.lower(): self._sap_employee_id_map.get(e.employee_id, e.employee_id)
-                        for e in MOCK_EMPLOYEES
-                    }
-                else:
-                    local_name_to_id = {e.display_name.lower(): e.employee_id for e in MOCK_EMPLOYEES}
-                result = await self._sap_absence_agent.handle(
-                    message,
-                    step_recorder=lambda name, step_status, detail, data=None: self._record_step(
-                        trace, name, step_status, detail, data
-                    ),
-                    acting_sap_user_id=self._resolve_sap_id(context.employee_id) or self._settings.sap_acting_user_id,
-                    acting_user_display_name=context.user_display_name,
-                    allowed_employee_ids=[self._resolve_sap_id(eid) for eid in context.allowed_employee_ids] or None,
-                    local_name_to_id=local_name_to_id,
-                    all_sap_user_ids=self._sap_all_user_ids or None,
-                )
-                if result.handled:
-                    self._record_step(
-                        trace,
-                        "sap_absence_agent",
-                        "completed" if result.status == "success" else result.status,
-                        "SAP Absence Agent returned a structured result.",
-                        {"result_status": result.status},
-                    )
-                    parsed_question = self._sap_result_to_parsed_question(result)
-                    trace.detected_intent = "sap_absences"
-                    trace.parsed_request = {
-                        "intent": asdict(sap_absence_precheck),
-                        "agent_result_status": result.status,
-                    }
-                    trace.tool_name = "sap_absence_agent"
-                    trace.authorization_outcome = "not_applicable"
-                    trace.status = self._sap_result_to_request_status(result)
-                    trace.minimized_result = self._minimize_sap_absence_result(result)
-                    status = trace.status  # type: ignore[assignment]
-                    authorization_outcome = trace.authorization_outcome
-                    if result.status == "success":
-                        answer = await self._generate_answer(
-                            parsed_question=parsed_question,
-                            status=status,
-                            employee=None,
-                            result=self._minimize_sap_absence_result(result),
-                            error_message=None,
-                            clarification_options=[],
-                            user_message=message,
-                        )
-                    else:
-                        answer = self._sap_result_to_answer(result)
-                    return await self._finalize(
-                        trace=trace,
-                        request_id=request_id,
-                        answer=answer,
-                        parsed_question=parsed_question,
-                        tool_name=trace.tool_name,
-                        target_employee=None,
-                        authorization_outcome=authorization_outcome,
-                        status=status,
-                        started=started,
-                        message=message,
-                        context_user=context,
-                    )
+            trace.detected_intent = structured_intent.intent
+            trace.parsed_request = structured_intent.model_dump()
 
-            if self._should_route_to_general_chat(message):
-                self._record_step(trace, "routing", "completed", "Routed to general chat before HR data extraction.")
-                parsed_question = ParsedQuestion(intent="general_chat", needs_clarification=False)
-                trace.detected_intent = parsed_question.intent
-                trace.parsed_request = parsed_question.model_dump(mode="json")
-                status = "success"
-                authorization_outcome = "not_applicable"
-                trace.authorization_outcome = authorization_outcome
-                trace.status = status
-                trace.minimized_result = {"mode": "general_chat", "routing": "heuristic_precheck"}
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={"mode": "general_chat", "routing": "heuristic_precheck"},
-                    error_message=None,
-                    clarification_options=[],
-                    user_message=message,
-                )
-                return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
-                )
-
-            self._record_step(trace, "llm_extract_request", "running", "Local model is extracting intent, employee reference, and dates.")
-            parsed_question = await self._llm_client.extract_question(
-                message, current_date=self._settings.demo_reference_date
-            )
-            self._record_step(
-                trace,
-                "llm_extract_request",
-                "completed",
-                "Local model returned structured request fields.",
-                parsed_question.model_dump(mode="json"),
-            )
-            trace.detected_intent = parsed_question.intent
-            trace.parsed_request = parsed_question.model_dump(mode="json")
-
-            if parsed_question.intent == "unsupported":
-                self._record_step(trace, "routing", "stopped", "Request is outside the supported assistant capabilities.")
-                status = "unsupported"
-                authorization_outcome = "not_applicable"
-                trace.authorization_outcome = authorization_outcome
-                trace.status = status
-                trace.minimized_result = {"mode": "unsupported_demo_scope"}
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={"mode": "unsupported_demo_scope"},
-                    error_message=None,
-                    clarification_options=[],
-                    user_message=message,
-                )
-                return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
-                )
-
-            if parsed_question.intent == "general_chat":
-                self._record_step(trace, "routing", "completed", "Routed to general chat after local model extraction.")
-                status = "success"
-                authorization_outcome = "not_applicable"
-                trace.authorization_outcome = authorization_outcome
-                trace.status = status
-                trace.minimized_result = {"mode": "general_chat"}
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={"mode": "general_chat"},
-                    error_message=None,
-                    clarification_options=[],
-                    user_message=message,
-                )
-                return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
-                )
-
-            if parsed_question.needs_clarification:
-                self._record_step(trace, "clarification", "stopped", parsed_question.clarification_reason or "More information is required.")
+            # ── Clarification ─────────────────────────────────────────────────────────────
+            if structured_intent.clarification_needed:
+                answer = structured_intent.clarification_question or "Could you please provide more details about your request?"
                 status = "clarification_required"
                 authorization_outcome = "needs_clarification"
                 trace.authorization_outcome = authorization_outcome
-                trace.authorization_reason = parsed_question.clarification_reason
                 trace.status = status
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={},
-                    error_message=parsed_question.clarification_reason,
-                    clarification_options=[],
-                    user_message=message,
-                )
                 return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
+                    trace=trace, request_id=request_id, answer=answer,
+                    parsed_question=ParsedQuestion(intent="general_chat", needs_clarification=True,
+                                                    clarification_reason=answer),
+                    tool_name=None, target_employee=None,
+                    authorization_outcome=authorization_outcome, status=status,
+                    started=started, message=message, context_user=context,
                 )
 
-            self._record_step(
-                trace,
-                "resolve_employee",
-                "running",
-                "Resolving the extracted employee reference against the active connector.",
-                {"reference": parsed_question.employee_reference},
-            )
-            raw_matches = await self._tool_service.resolve_employee(
-                parsed_question.employee_reference or "", context
-            )
-            trace.tool_name = "resolve_employee"
-            trace.tool_arguments = {"reference": parsed_question.employee_reference}
-            if not raw_matches:
-                self._record_step(
-                    trace,
-                    "resolve_employee",
-                    "stopped",
-                    "No employee matched the extracted reference in the active data source.",
-                    {
-                        "reference": parsed_question.employee_reference,
-                        "data_source": self._tool_service.connector_backend,
-                    },
-                )
-                status = "not_found"
-                authorization_outcome = "not_found"
-                trace.authorization_outcome = authorization_outcome
-                trace.authorization_reason = "No employee matched the provided reference."
-                trace.status = status
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={},
-                    error_message="I could not find a matching employee in the demo dataset.",
-                    clarification_options=[],
-                    user_message=message,
-                )
-                return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
-                )
+            # ── Step 2: Route to SAP API ──────────────────────────────────────────────────
+            self._record_step(trace, "sap_api_routing", "running",
+                              f"Routing to SAP API for intent: {structured_intent.intent}",
+                              {"intent": structured_intent.intent, "api": structured_intent.required_api})
 
-            authorized_matches = self._authorization_service.filter_authorized_matches(context, raw_matches)
-            self._record_step(
-                trace,
-                "authorization",
-                "completed" if authorized_matches else "stopped",
-                "Filtered resolved employees by the acting user's permissions.",
-                {
-                    "resolved_matches": len(raw_matches),
-                    "authorized_matches": len(authorized_matches),
-                },
-            )
-            if not authorized_matches:
-                status = "forbidden"
-                authorization_outcome = "forbidden"
-                trace.authorization_outcome = authorization_outcome
-                trace.authorization_reason = "The requester is not permitted to view the resolved employee."
-                trace.status = status
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={},
-                    error_message="You do not have permission to view that employee's absence data.",
-                    clarification_options=[],
-                    user_message=message,
-                )
-                return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
-                )
+            if structured_intent.intent == "leave_balance":
+                answer, status, sap_result = await self._handle_leave_balance(
+                    structured_intent, acting_sap_id, context, message, trace)
 
-            if len(authorized_matches) > 1:
-                self._record_step(trace, "ambiguity_check", "stopped", "Multiple authorized employees matched the request.")
-                status = "clarification_required"
-                authorization_outcome = "ambiguous"
-                trace.authorization_outcome = authorization_outcome
-                trace.authorization_reason = "Multiple authorized employees matched the reference."
-                trace.status = status
-                answer = await self._generate_answer(
-                    parsed_question=parsed_question,
-                    status=status,
-                    employee=None,
-                    result={},
-                    error_message="I found multiple matching employees.",
-                    clarification_options=[employee.display_name for employee in authorized_matches],
-                    user_message=message,
-                )
-                return await self._finalize(
-                    trace=trace,
-                    request_id=request_id,
-                    answer=answer,
-                    parsed_question=parsed_question,
-                    tool_name=tool_name,
-                    target_employee=target_employee,
-                    authorization_outcome=authorization_outcome,
-                    status=status,
-                    started=started,
-                    message=message,
-                    context_user=context,
-                )
+            elif structured_intent.intent == "approval_status":
+                answer, status, sap_result = await self._handle_approval_status(
+                    structured_intent, acting_sap_id, context, message, trace)
 
-            target_employee = authorized_matches[0]
-            self._record_step(
-                trace,
-                "target_employee",
-                "completed",
-                "Resolved one authorized target employee.",
-                {"employee_id": target_employee.employee_id, "display_name": target_employee.display_name},
-            )
-            authorization_outcome = "authorized"
+            elif structured_intent.intent in {"upcoming_absences", "absence_history", "team_absences"}:
+                answer, status, sap_result = await self._handle_absence_query(
+                    structured_intent, acting_sap_id, context, message, trace)
+
+            elif structured_intent.intent == "create_absence_request":
+                # TODO: integrate with leave_request_agent when available
+                answer = "Creating absence requests via chat is coming soon. Please use the SAP SuccessFactors portal for now."
+                status = "unsupported"
+                sap_result = {}
+
+            elif structured_intent.intent == "cancel_absence_request":
+                # TODO: implement cancel via SAP EmployeeTime DELETE/PATCH
+                answer = "Cancelling absence requests via chat is not yet available. Please use the SAP SuccessFactors portal."
+                status = "unsupported"
+                sap_result = {}
+
+            else:  # unknown → general chat
+                answer, status, sap_result = await self._handle_general_chat_intent(message, context, trace)
+
+            authorization_outcome = "not_applicable"
             trace.authorization_outcome = authorization_outcome
-            trace.target_employee_id = target_employee.employee_id
-            trace.target_employee_display_name = target_employee.display_name
-
-            self._record_step(trace, "tool_execution", "running", "Running the approved absence tool.")
-            tool_name, result = await self._run_tool(parsed_question, target_employee)
-            self._record_step(trace, "tool_execution", "completed", "Absence tool returned a minimized result.", {"tool_name": tool_name})
-            status = "success"
-            trace.tool_name = tool_name
-            trace.tool_arguments = {
-                "employee_id": target_employee.employee_id,
-                "start_date": parsed_question.start_date.isoformat() if parsed_question.start_date else None,
-                "end_date": parsed_question.end_date.isoformat() if parsed_question.end_date else None,
-                "absence_type": parsed_question.absence_type,
-            }
-            trace.minimized_result = result
             trace.status = status
-            answer = await self._generate_answer(
-                parsed_question=parsed_question,
-                status=status,
-                employee=target_employee,
-                result=result,
-                error_message=None,
-                clarification_options=[],
-                user_message=message,
+            trace.minimized_result = sap_result
+
+            parsed_question = ParsedQuestion(
+                intent="general_chat",
+                needs_clarification=False,
             )
+
             return await self._finalize(
-                trace=trace,
-                request_id=request_id,
-                answer=answer,
-                parsed_question=parsed_question,
-                tool_name=tool_name,
-                target_employee=target_employee,
-                authorization_outcome=authorization_outcome,
-                status=status,
-                started=started,
-                message=message,
-                context_user=context,
+                trace=trace, request_id=request_id, answer=answer,
+                parsed_question=parsed_question, tool_name=structured_intent.required_api,
+                target_employee=None, authorization_outcome=authorization_outcome,
+                status=status, started=started, message=message, context_user=context,
             )
 
         except DemoUserNotFoundError as exc:
@@ -656,6 +362,124 @@ class ChatOrchestrator:
             r"\bsap\b",
         ]
         return not any(re.search(pattern, lowered, re.IGNORECASE) for pattern in hr_or_data_markers)
+
+    async def _handle_leave_balance(self, intent, acting_sap_id, context, message, trace):
+        sap_client = self._sap_client or getattr(self._sap_absence_agent, '_client', None)
+        if not sap_client or not hasattr(sap_client, 'get_leave_balance'):
+            answer = "Leave balance queries are only available when connected to SAP SuccessFactors."
+            return answer, "unsupported", {}
+
+        user_id = acting_sap_id
+        if intent.employee_reference == "specific_employee" and intent.employee_name:
+            try:
+                resolved = await sap_client.resolve_user_id_by_name(intent.employee_name)
+                if resolved:
+                    user_id = resolved
+            except Exception:
+                pass
+
+        self._record_step(trace, "sap_leave_balance", "running", "Fetching leave balance from EmpTimeAccountBalance.", {"user_id": user_id})
+        try:
+            balances = await sap_client.get_leave_balance(user_id=user_id)
+        except Exception as exc:
+            LOGGER.warning("[SAP] get_leave_balance failed: %s", exc)
+            balances = []
+
+        sap_result = {"user_id": user_id, "display_name": context.user_display_name, "balances": balances}
+        self._record_step(trace, "sap_leave_balance", "completed", "Leave balance fetched.", {"count": len(balances)})
+
+        answer = await self._generate_structured_answer(message, intent.model_dump(), sap_result)
+        return answer, "success", sap_result
+
+    async def _handle_approval_status(self, intent, acting_sap_id, context, message, trace):
+        sap_client = self._sap_client or getattr(self._sap_absence_agent, '_client', None)
+        if not sap_client or not hasattr(sap_client, 'get_pending_leave_requests'):
+            answer = "Approval status queries are only available when connected to SAP SuccessFactors."
+            return answer, "unsupported", {}
+
+        user_id = acting_sap_id
+        self._record_step(trace, "sap_approval_status", "running", "Fetching pending leave requests.", {"user_id": user_id})
+        try:
+            requests = await sap_client.get_pending_leave_requests(user_id=user_id)
+        except Exception as exc:
+            LOGGER.warning("[SAP] get_pending_leave_requests failed: %s", exc)
+            requests = []
+
+        sap_result = {"user_id": user_id, "display_name": context.user_display_name, "pending_requests": requests}
+        self._record_step(trace, "sap_approval_status", "completed", "Pending requests fetched.", {"count": len(requests)})
+
+        answer = await self._generate_structured_answer(message, intent.model_dump(), sap_result)
+        return answer, "success", sap_result
+
+    async def _handle_absence_query(self, intent, acting_sap_id, context, message, trace):
+        """Route absence_history, upcoming_absences, team_absences to the existing SapAbsenceAgent."""
+        if self._sap_absence_agent is None:
+            return "Absence queries are not available.", "unsupported", {}
+
+        if self._settings.connector_backend == "successfactors":
+            local_name_to_id = {
+                e.display_name.lower(): self._sap_employee_id_map.get(e.employee_id, e.employee_id)
+                for e in MOCK_EMPLOYEES
+            }
+        else:
+            local_name_to_id = {e.display_name.lower(): e.employee_id for e in MOCK_EMPLOYEES}
+
+        if context.user_role == "hr_admin" and self._sap_all_user_ids:
+            effective_allowed_ids = self._sap_all_user_ids
+        else:
+            effective_allowed_ids = [self._resolve_sap_id(eid) for eid in context.allowed_employee_ids] or None
+
+        self._record_step(trace, "sap_absence_agent", "running", f"Delegating {intent.intent} to SapAbsenceAgent.")
+        result = await self._sap_absence_agent.handle(
+            message,
+            step_recorder=lambda name, step_status, detail, data=None: self._record_step(trace, name, step_status, detail, data),
+            acting_sap_user_id=acting_sap_id,
+            acting_user_display_name=context.user_display_name,
+            allowed_employee_ids=effective_allowed_ids,
+            local_name_to_id=local_name_to_id,
+            all_sap_user_ids=self._sap_all_user_ids or None,
+        )
+
+        if not result.handled:
+            return "I could not retrieve the absence data. Please try rephrasing your question.", "unavailable", {}
+
+        sap_result = self._minimize_sap_absence_result(result)
+        self._record_step(trace, "sap_absence_agent", "completed" if result.status == "success" else result.status,
+                          "SapAbsenceAgent returned result.", {"status": result.status})
+
+        if result.status == "success":
+            answer = await self._generate_structured_answer(message, intent.model_dump(), sap_result)
+            return answer, "success", sap_result
+        else:
+            return self._sap_result_to_answer(result), self._sap_result_to_request_status(result), sap_result
+
+    async def _handle_general_chat_intent(self, message, context, trace):
+        self._record_step(trace, "general_chat", "running", "Handling as general conversation.")
+        payload = AnswerGenerationPayload(
+            request_status="success",
+            intent="general_chat",
+            user_message=message,
+            result={"mode": "general_chat"},
+            supported_capabilities=["leave balance", "upcoming absences", "absence history", "approval status", "team absences"],
+        )
+        answer = await self._llm_client.generate_answer(payload)
+        return answer, "success", {}
+
+    async def _generate_structured_answer(self, user_message: str, intent_json: dict, sap_result: dict) -> str:
+        """Step 2 LLM call: generate a natural-language answer from the SAP result."""
+        if hasattr(self._llm_client, 'generate_structured_answer'):
+            try:
+                return await self._llm_client.generate_structured_answer(user_message, intent_json, sap_result)
+            except Exception:
+                pass
+        # Fallback to existing generate_answer
+        payload = AnswerGenerationPayload(
+            request_status="success",
+            intent=intent_json.get("intent"),
+            user_message=user_message,
+            result=sap_result,
+        )
+        return await self._llm_client.generate_answer(payload)
 
     def _record_step(
         self,

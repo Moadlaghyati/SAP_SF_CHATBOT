@@ -68,6 +68,7 @@ class AppContainer:
             dept_overlap_agent=self.dept_overlap_agent,
             sap_employee_id_map=self.sap_employee_id_map,
             sap_all_user_ids=self.sap_all_user_ids,
+            sap_client=self.sap_success_factors_client,
         )
 
     def _build_connector(self) -> SuccessFactorsConnector:

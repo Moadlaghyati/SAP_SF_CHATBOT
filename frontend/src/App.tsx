@@ -632,6 +632,7 @@ function applyChatResponse(response: ChatResponse, pendingMessageId?: string) {
       requestId: response.request_id,
       pending: false,
       minimizedResult: response.trace.minimized_result,
+      durationMs: response.trace.duration_ms,
     };
 
     // Use functional updater so we always get the latest messages (avoids stale closure)

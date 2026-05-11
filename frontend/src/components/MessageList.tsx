@@ -1,6 +1,13 @@
 import type { ChatMessage } from "../types/api";
 import { StatusPill } from "./StatusPill";
 
+function formatDuration(ms: number): string {
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${m}m ${s}s`;
+}
+
 const ABSENCE_LABELS: Record<string, string> = {
   // ── MAR_ codes ───────────────────────────────────────
   MAR_SICKLEAVE: "Sick Leave",
@@ -507,6 +514,9 @@ export function MessageList({ messages, pendingElapsedSeconds = 0 }: MessageList
                 <span className="pending-indicator">Thinking locally... {pendingElapsedSeconds}s</span>
               ) : null}
               {message.status ? <StatusPill label={message.status} tone={message.status} /> : null}
+              {message.role === "assistant" && !message.pending && message.durationMs != null ? (
+                <span className="response-duration">{formatDuration(message.durationMs)}</span>
+              ) : null}
               {(absenceData || isComparison) ? (
                 <>
                   <button

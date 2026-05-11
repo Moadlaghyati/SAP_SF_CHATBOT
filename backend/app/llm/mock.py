@@ -143,6 +143,48 @@ class MockLocalLLMClient(LocalLLMClient):
             f"between {result['period']['start']} and {result['period']['end']}."
         )
 
+    async def analyze_intent(self, question: str, current_date: date, acting_user_display_name: str | None = None) -> "StructuredIntent":
+        from app.schemas.llm import StructuredIntent
+        lowered = question.lower()
+
+        # Determine intent
+        if any(k in lowered for k in ["balance", "days left", "remaining", "how many days do i have"]):
+            intent = "leave_balance"
+        elif any(k in lowered for k in ["upcoming", "next week", "tomorrow", "who is absent", "who will be absent"]):
+            intent = "upcoming_absences"
+        elif any(k in lowered for k in ["history", "last month", "last year", "past absences"]):
+            intent = "absence_history"
+        elif any(k in lowered for k in ["approved", "pending", "approval", "status of my"]):
+            intent = "approval_status"
+        elif any(k in lowered for k in ["request", "apply for", "submit", "book leave"]):
+            intent = "create_absence_request"
+        elif any(k in lowered for k in ["cancel", "withdraw"]):
+            intent = "cancel_absence_request"
+        elif any(k in lowered for k in ["team", "department", "my direct reports", "my team"]):
+            intent = "team_absences"
+        else:
+            intent = "unknown"
+
+        # Determine employee_reference
+        if re.search(r'\b(my|i |i\'m|me\b|myself)\b', lowered):
+            employee_reference = "current_user"
+        elif any(k in lowered for k in ["team", "department", "direct reports"]):
+            employee_reference = "manager_team"
+        else:
+            employee_reference = "unknown"
+
+        return StructuredIntent(
+            intent=intent,
+            employee_reference=employee_reference,
+            clarification_needed=False,
+        )
+
+    async def generate_structured_answer(self, user_message: str, intent_json: dict, sap_result: dict) -> str:
+        intent = intent_json.get("intent", "unknown")
+        if not sap_result:
+            return "No matching absence information was found."
+        return f"Here is the SAP data for your request ({intent}): {sap_result}"
+
     async def health_check(self) -> tuple[bool, str]:
         return True, "Mock local LLM is ready."
 
