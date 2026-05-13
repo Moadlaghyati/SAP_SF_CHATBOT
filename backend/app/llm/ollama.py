@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import httpx
+
+LOGGER = logging.getLogger(__name__)
 
 from app.config.settings import Settings
 from app.llm.base import LocalLLMClient
@@ -104,16 +107,18 @@ class OllamaClient(LocalLLMClient):
                     "prompt": prompt,
                     "stream": False,
                     "format": "json",
-                    "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 300},
+                    "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 400},
                 },
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise self._map_http_error(exc) from exc
         raw = response.json().get("response", "").strip()
+        LOGGER.info("[Ollama] analyze_intent raw response: %s", raw[:500])
         try:
             return StructuredIntent.model_validate_json(raw)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("[Ollama] analyze_intent parse failed (%s), raw was: %s", exc, raw[:300])
             return StructuredIntent(intent="unknown", clarification_needed=False)
 
     async def generate_structured_answer(self, user_message: str, intent_json: dict, sap_result: dict) -> str:
@@ -126,7 +131,7 @@ class OllamaClient(LocalLLMClient):
                     "model": self._settings.ollama_model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 150},
+                    "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 600},
                 },
             )
             response.raise_for_status()

@@ -227,73 +227,7 @@ function downloadExcel(message: ChatMessage) {
   URL.revokeObjectURL(url);
 }
 
-function toIcsDate(dateStr: string): string {
-  // Convert "2026-01-15" → "20260115"
-  return dateStr.replace(/-/g, "");
-}
 
-function addOneDay(dateStr: string): string {
-  // iCal DTEND for all-day events is exclusive (day after last day)
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10).replace(/-/g, "");
-}
-
-function downloadICS(message: ChatMessage) {
-  const data = extractAbsenceData(message);
-  if (!data) return;
-
-  const { absences, employeeName, isWorkforce } = data;
-  const employeeLabel = employeeName ?? "All Employees";
-  const now = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) + "Z";
-
-  const events = absences
-    .filter((a) => a.start_date && a.end_date)
-    .map((a, i) => {
-      const name = isWorkforce ? a.user_id : employeeLabel;
-      const summary = `${a.absence_type || "Absence"} — ${name}`;
-      const description = [
-        `Employee: ${name}`,
-        `Type: ${a.absence_type || "—"}`,
-        `Status: ${a.approval_status || "—"}`,
-        a.quantity_in_days != null ? `Duration: ${a.quantity_in_days} day(s)` : "",
-      ]
-        .filter(Boolean)
-        .join("\\n");
-
-      return [
-        "BEGIN:VEVENT",
-        `UID:absence-${i}-${a.start_date}-${a.user_id}@hr-assistant`,
-        `DTSTAMP:${now}`,
-        `DTSTART;VALUE=DATE:${toIcsDate(a.start_date)}`,
-        `DTEND;VALUE=DATE:${addOneDay(a.end_date)}`,
-        `SUMMARY:${summary}`,
-        `DESCRIPTION:${description}`,
-        "STATUS:CONFIRMED",
-        "END:VEVENT",
-      ].join("\r\n");
-    });
-
-  const icsContent = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//SAP HR Assistant//EN",
-    "CALSCALE:GREGORIAN",
-    "METHOD:PUBLISH",
-    ...events,
-    "END:VCALENDAR",
-  ].join("\r\n");
-
-  const blob = new Blob([icsContent], { type: "text/calendar;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `absences_${employeeLabel.replace(/\s+/g, "_")}.ics`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
 
 function buildOutlookUrl(absence: AbsenceRow, label: string): string {
   const nextDay = new Date(absence.end_date + "T00:00:00");
@@ -508,6 +442,137 @@ interface PendingRequest {
   externalCode: string | null;
 }
 
+interface HolidayRow {
+  date: string;
+  name: string;
+  type: string;
+}
+
+function daysUntil(dateStr: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(dateStr + "T00:00:00");
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function formatHolidayDate(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
+function HolidayTable({ message }: { message: ChatMessage }) {
+  if (!message.minimizedResult) return null;
+  const raw = message.minimizedResult.holidays;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const holidays = raw as HolidayRow[];
+  const employeeName = message.minimizedResult.employee_name as string | null | undefined;
+  const employeeFound = message.minimizedResult.employee_found as boolean | undefined;
+
+  let headerLine: string;
+  if (employeeName && employeeFound === false) {
+    headerLine = `Employee "${employeeName}" not found — showing company public holidays`;
+  } else if (employeeName) {
+    headerLine = `Holidays found for ${employeeName}`;
+  } else {
+    headerLine = "Public holidays";
+  }
+
+  return (
+    <div className="holiday-table-wrapper">
+      <p className="holiday-table-header">{headerLine} <span className="holiday-table-count">({holidays.length})</span></p>
+      <table className="holiday-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Holiday</th>
+            <th>Type</th>
+            <th>Days Until</th>
+          </tr>
+        </thead>
+        <tbody>
+          {holidays.map((h) => {
+            const diff = daysUntil(h.date);
+            const isPast = diff < 0;
+            const isToday = diff === 0;
+            const typeKey = (h.type ?? "public").toLowerCase();
+            return (
+              <tr key={h.date} className={isPast ? "holiday-row--past" : ""}>
+                <td className="holiday-date">{formatHolidayDate(h.date)}</td>
+                <td className="holiday-name">{h.name}</td>
+                <td>
+                  <span className={`holiday-type-badge holiday-type-badge--${typeKey}`}>
+                    {(h.type ?? "public").replace(/_/g, " ")}
+                  </span>
+                </td>
+                <td className="holiday-days-until">
+                  {isPast ? (
+                    <span className="holiday-days--past">Passed</span>
+                  ) : isToday ? (
+                    <span className="holiday-days--today">Today</span>
+                  ) : (
+                    <span className="holiday-days--future">{diff} day{diff !== 1 ? "s" : ""}</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+interface WorkDay { day: string; start: string; end: string; hours: number; }
+
+function WorkScheduleCard({ message }: { message: ChatMessage }) {
+  if (!message.minimizedResult) return null;
+  const ws = message.minimizedResult.work_schedule as Record<string, unknown> | null | undefined;
+  if (!ws) return null;
+  const employeeName = message.minimizedResult.employee_name as string | null | undefined;
+  const rawDisplayName = ws.employee_display_name as string | undefined;
+  const isIdLike = rawDisplayName != null && /^\d+$/.test(rawDisplayName);
+  const name = employeeName ?? (isIdLike ? undefined : rawDisplayName) ?? "Employee";
+  const scheduleName = (ws.schedule_name as string | undefined) ?? "Standard";
+  const hoursPerWeek = ws.hours_per_week as number | undefined;
+  const daysPerWeek = ws.days_per_week as number | undefined;
+  const workDays = (ws.work_days as WorkDay[] | undefined) ?? [];
+
+  return (
+    <div className="work-schedule-card">
+      <div className="work-schedule-card__header">
+        <span className="work-schedule-card__name">{name}</span>
+        <span className="work-schedule-card__badge">{scheduleName}</span>
+      </div>
+      <div className="work-schedule-card__stats">
+        {daysPerWeek != null && <span>{daysPerWeek} days/week</span>}
+        {hoursPerWeek != null && <span>{hoursPerWeek}h/week</span>}
+      </div>
+      {workDays.length > 0 && (
+        <table className="work-schedule-table">
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            {workDays.map((d) => (
+              <tr key={d.day}>
+                <td className="ws-day">{d.day}</td>
+                <td className="ws-time">{d.start}</td>
+                <td className="ws-time">{d.end}</td>
+                <td className="ws-hours">{d.hours}h</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function PendingRequestsTable({ message }: { message: ChatMessage }) {
   if (!message.minimizedResult) return null;
   const raw = message.minimizedResult.pending_requests;
@@ -553,7 +618,7 @@ function PendingRequestsTable({ message }: { message: ChatMessage }) {
   );
 }
 
-function AttachmentUploadButton({ message, onUpload }: { message: ChatMessage; onUpload: (file: File) => void }) {
+function AttachmentUploadButton({ onUpload }: { message: ChatMessage; onUpload: (file: File) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
     <>
@@ -588,6 +653,11 @@ export function MessageList({ messages, pendingElapsedSeconds = 0, onUploadAttac
         const isComparison = !!(message.minimizedResult?.comparison);
         const isPendingRequests = message.role === "assistant" && !message.pending &&
           Array.isArray(message.minimizedResult?.pending_requests);
+        const holidays = message.minimizedResult?.holidays;
+        const isHolidayResult = message.role === "assistant" && !message.pending &&
+          Array.isArray(holidays) && (holidays as unknown[]).length > 0;
+        const isWorkSchedule = message.role === "assistant" && !message.pending &&
+          !!(message.minimizedResult?.work_schedule);
         const needsAttachment = message.role === "assistant" && !message.pending &&
           message.minimizedResult?.needs_attachment === true;
         return (
@@ -636,6 +706,10 @@ export function MessageList({ messages, pendingElapsedSeconds = 0, onUploadAttac
               <AbsenceTable data={absenceData} />
             ) : isPendingRequests ? (
               <PendingRequestsTable message={message} />
+            ) : isWorkSchedule ? (
+              <WorkScheduleCard message={message} />
+            ) : isHolidayResult ? (
+              <HolidayTable message={message} />
             ) : (
               <p className="message-card__text">{message.text}</p>
             )}

@@ -118,6 +118,30 @@ class AuditRecord(BaseModel):
     data_source: str | None = None
 
 
+class Holiday(BaseModel):
+    date: str
+    name: str
+    name_fr: str = ""
+    type: str = "public"
+    country: str = "MA"
+
+
+class WorkDay(BaseModel):
+    day_of_week: str
+    start_time: str
+    end_time: str
+    hours: float
+
+
+class WorkSchedule(BaseModel):
+    employee_id: str
+    employee_display_name: str
+    schedule_name: str
+    work_days: list[WorkDay]
+    hours_per_week: float
+    days_per_week: int
+
+
 class ConnectorHealth(BaseModel):
     backend: str
     available: bool

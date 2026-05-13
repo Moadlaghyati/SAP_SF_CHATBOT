@@ -219,9 +219,14 @@ def build_intent_analysis_prompt(question: str, current_date: date, acting_user_
 
 Today is {today.isoformat()}.
 
+IMPORTANT — typo tolerance: treat common misspellings as their correct form when classifying intent:
+- "schedual" / "shedule" / "schedul" → treat as "schedule" → work_schedule_query
+- "holliday" / "holidai" → treat as "holiday" → holiday_query
+- "absense" / "absance" → treat as "absence"
+
 Return ONLY valid JSON with this exact schema:
 {{
-  "intent": "leave_balance|upcoming_absences|absence_history|approval_status|create_absence_request|cancel_absence_request|team_absences|unknown",
+  "intent": "leave_balance|upcoming_absences|absence_history|approval_status|create_absence_request|cancel_absence_request|team_absences|holiday_query|work_schedule_query|unknown",
   "employee_reference": "current_user|manager_team|specific_employee|unknown",
   "employee_name": "string or null",
   "date_range": {{"start": "YYYY-MM-DD or null", "end": "YYYY-MM-DD or null"}},
@@ -248,6 +253,8 @@ Intent definitions:
 - create_absence_request: user wants to CREATE or SUBMIT a NEW leave request (e.g. "I want to request leave", "submit vacation request", "book leave", "I need 3 days off"). ONLY use this when the user explicitly wants to create something new — never use it when the user is asking to VIEW existing requests.
 - cancel_absence_request: user wants to cancel a leave request (e.g. "cancel my leave", "withdraw my vacation request")
 - team_absences: user asks about their team or department absences (e.g. "who on my team is absent", "show my department absences", "absences in my team")
+- holiday_query: user asks about public holidays, national holidays, religious holidays, days off, or company calendar (e.g. "what are the holidays in May", "is next Monday a holiday", "list public holidays 2026", "jours fériés", "Eid holiday date")
+- work_schedule_query: user asks about working hours, work schedule (or misspelt "schedual"/"shedule"), work days, or shift times — also when asking to VIEW or SEE an employee's schedule (e.g. "what are Walid's working hours", "can i see Walid working schedual", "show me the schedule for Ahmed", "what is the work schedule", "horaire de travail")
 - unknown: general question, greeting, or unclear intent
 
 employee_reference rules:
@@ -256,7 +263,9 @@ employee_reference rules:
 - manager_team: question uses "my team", "my department", "my direct reports", "our department", "our team"
 - unknown: unclear who the question is about
 
-Examples:
+Examples (note: typos like "schedual" must still be classified correctly):
+- "can i see Walid regragi working schedual" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Walid Regragi","clarification_needed":false}}
+- "show me Fouzi schedual" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Fouzi","clarification_needed":false}}
 - "how many vacation days do I have left?" → {{"intent":"leave_balance","employee_reference":"current_user","clarification_needed":false}}
 - "is my leave request approved?" → {{"intent":"approval_status","employee_reference":"current_user","clarification_needed":false}}
 - "show pending leave requests for Walid Regragi this year" → {{"intent":"approval_status","employee_reference":"specific_employee","employee_name":"Walid Regragi","clarification_needed":false}}
@@ -270,6 +279,21 @@ Examples:
 - "submit a sick leave request for next week" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"sick leave","date_range":{{"start":"{next_week_start.isoformat()}","end":"{next_week_end.isoformat()}"}},"clarification_needed":false}}
 - "book 2 days of vacation starting June 5" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"vacation","date_range":{{"start":"2026-06-05","end":"2026-06-06"}},"clarification_needed":false}}
 - "cancel my vacation request" → {{"intent":"cancel_absence_request","employee_reference":"current_user","clarification_needed":false}}
+- "what are the public holidays in 2026?" → {{"intent":"holiday_query","employee_reference":"unknown","clarification_needed":false}}
+- "is May 1st a holiday?" → {{"intent":"holiday_query","employee_reference":"unknown","clarification_needed":false}}
+- "list all holidays this year" → {{"intent":"holiday_query","employee_reference":"unknown","clarification_needed":false}}
+- "quels sont les jours fériés en mai?" → {{"intent":"holiday_query","employee_reference":"unknown","clarification_needed":false}}
+- "i want to see walid regragi public holidays" → {{"intent":"holiday_query","employee_reference":"specific_employee","employee_name":"Walid Regragi","clarification_needed":false}}
+- "show me upcoming holidays for Fouzi" → {{"intent":"holiday_query","employee_reference":"specific_employee","employee_name":"Fouzi","clarification_needed":false}}
+- "what are the upcoming holidays for my team?" → {{"intent":"holiday_query","employee_reference":"manager_team","clarification_needed":false}}
+- "what holidays does Walid have this year?" → {{"intent":"holiday_query","employee_reference":"specific_employee","employee_name":"Walid","clarification_needed":false}}
+- "what are Walid's working hours?" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Walid","clarification_needed":false}}
+- "what is the work schedule?" → {{"intent":"work_schedule_query","employee_reference":"current_user","clarification_needed":false}}
+- "what time does work start?" → {{"intent":"work_schedule_query","employee_reference":"current_user","clarification_needed":false}}
+- "can i see Walid regragi working schedual" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Walid Regragi","clarification_needed":false}}
+- "show me the work schedule for Fouzi" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Fouzi","clarification_needed":false}}
+- "what is Leila's schedule?" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Leila","clarification_needed":false}}
+- "horaire de travail de Walid" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Walid","clarification_needed":false}}
 - "hello, what can you do?" → {{"intent":"unknown","employee_reference":"unknown","clarification_needed":false}}
 
 Question: {question}""".strip()
@@ -287,6 +311,8 @@ Rules:
 - Summarise absence records in plain sentences when there are many.
 - If the intent is "create_absence_request" and the SAP result contains status="submitted", confirm the request was successfully submitted with the leave type, start date, and end date.
 - If the intent is "approval_status", list EVERY entry in "pending_requests" as a separate bullet — show timeType, startDate, endDate, quantityInDays, and approvalStatus for each one. If the list is empty, say there are no pending leave requests. NEVER say you lack access to enterprise systems — the data is already in the SAP result above. SAP dates arrive as "/Date(milliseconds)/" — convert them to readable dates (divide ms by 1000, interpret as Unix timestamp UTC).
+- If the intent is "holiday_query", list each holiday as a bullet with date and name. Group by month if there are more than 5. If the list is empty, say no public holidays were found in that period.
+- If the intent is "work_schedule_query", present the schedule clearly: schedule name, working days, start/end times, hours per day, and hours per week.
 
 User message: {json.dumps(user_message, ensure_ascii=True)}
 

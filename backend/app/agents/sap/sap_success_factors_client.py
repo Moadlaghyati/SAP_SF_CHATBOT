@@ -585,6 +585,118 @@ class SapSuccessFactorsClient:
             if isinstance(r, dict)
         ]
 
+    async def get_holidays(self, *, start_date: str, end_date: str) -> list[dict]:
+        """Fetch Holiday records for a date range.
+
+        Tries the SAP Holiday entity first; falls back to the built-in Morocco
+        public holiday calendar when the entity is unavailable in this instance.
+        """
+        self._ensure_base_url()
+        sap_filter = (
+            f"holidayDate ge datetime'{start_date}T00:00:00' "
+            f"and holidayDate le datetime'{end_date}T23:59:59'"
+        )
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter,
+             "$select": "holidayDate,name_defaultValue,name_en_US,holidayClass"},
+            quote_via=quote,
+        )
+        url = f"{self._settings.sap_base_url.rstrip('/')}/Holiday?{query}"
+        LOGGER.debug("[SAP] get_holidays start=%s end=%s", start_date, end_date)
+        try:
+            payload = await self._get_all_pages_json(url)
+            results = payload.get("d", {}).get("results", [])
+            if isinstance(results, list) and results:
+                holidays = []
+                for r in results:
+                    if not isinstance(r, dict):
+                        continue
+                    h_date = _parse_sap_date(r.get("holidayDate")) or r.get("holidayDate", "")
+                    name = r.get("name_en_US") or r.get("name_defaultValue") or "Public Holiday"
+                    holidays.append({"date": h_date, "name": name, "type": r.get("holidayClass", "public")})
+                holidays.sort(key=lambda h: h["date"])
+                return holidays
+        except ConnectorUnavailableError as exc:
+            LOGGER.warning("[SAP] get_holidays SAP entity unavailable, using built-in calendar: %s", exc)
+
+        # Fallback: built-in Morocco public holiday calendar
+        from datetime import date as _date
+        from app.connectors.mock_data import MOCK_HOLIDAYS
+        start = _date.fromisoformat(start_date)
+        end = _date.fromisoformat(end_date)
+        return [
+            {"date": h.date, "name": h.name, "type": h.type}
+            for h in MOCK_HOLIDAYS
+            if start <= _date.fromisoformat(h.date) <= end
+        ]
+
+    async def get_work_schedule(self, *, user_id: str) -> dict | None:
+        """Fetch work schedule for an employee via EmpJob workSchedule field.
+
+        Falls back to the standard Morocco 40h/week schedule when SAP returns nothing.
+        """
+        self._ensure_base_url()
+        sap_filter = f"userId eq '{_escape_odata_string(user_id)}'"
+        query = urlencode(
+            {"$format": "json", "$filter": sap_filter,
+             "$select": "userId,workSchedule", "$orderby": "startDate desc", "$top": "1",
+             "$expand": "workScheduleNav"},
+            quote_via=quote,
+        )
+        url = f"{self._settings.sap_base_url.rstrip('/')}/EmpJob?{query}"
+        LOGGER.debug("[SAP] get_work_schedule user_id=%s", user_id)
+        sap_result = None
+        try:
+            payload = await self._get_json(url)
+            results = payload.get("d", {}).get("results", [])
+            if isinstance(results, list) and results:
+                job = results[0]
+                ws_nav = job.get("workScheduleNav") or {}
+                if isinstance(ws_nav, dict) and ws_nav.get("results"):
+                    ws_nav = ws_nav["results"][0] if ws_nav["results"] else ws_nav
+                ws_name = (ws_nav.get("name_defaultValue") or ws_nav.get("name_en_US")
+                           or job.get("workSchedule") or "Standard")
+                hours_per_day = float(ws_nav.get("hoursPerDay") or 8)
+                work_days_count = int(ws_nav.get("workDays") or 5)
+                sap_result = {
+                    "employee_id": user_id,
+                    "schedule_name": ws_name,
+                    "hours_per_week": hours_per_day * work_days_count,
+                    "days_per_week": work_days_count,
+                    "work_days": [
+                        {"day": d, "start": "08:30", "end": "17:30", "hours": hours_per_day}
+                        for d in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][:work_days_count]
+                    ],
+                }
+        except ConnectorUnavailableError as exc:
+            LOGGER.warning("[SAP] get_work_schedule failed: %s", exc)
+
+        if sap_result:
+            return sap_result
+
+        # Fallback: standard Morocco 40h/week schedule
+        LOGGER.info("[SAP] get_work_schedule using built-in schedule for user_id=%s", user_id)
+        from app.connectors.mock_data import MOCK_EMPLOYEES
+        display_name = next(
+            (e.display_name for e in MOCK_EMPLOYEES
+             if e.employee_id == user_id or getattr(e, "sap_user_id", None) == user_id),
+            user_id,
+        )
+        return {
+            "employee_id": user_id,
+            "employee_display_name": display_name,
+            "schedule_name": "Standard Morocco (40h/week)",
+            "hours_per_week": 40.0,
+            "days_per_week": 5,
+            "work_days": [
+                {"day": "Monday",    "start": "08:30", "end": "17:30", "hours": 8.0},
+                {"day": "Tuesday",   "start": "08:30", "end": "17:30", "hours": 8.0},
+                {"day": "Wednesday", "start": "08:30", "end": "17:30", "hours": 8.0},
+                {"day": "Thursday",  "start": "08:30", "end": "17:30", "hours": 8.0},
+                {"day": "Friday",    "start": "08:30", "end": "17:00", "hours": 8.0},
+            ],
+        }
+
     async def _get_json(self, url: str) -> dict:
         token = await self._auth_service.get_access_token()
         try:

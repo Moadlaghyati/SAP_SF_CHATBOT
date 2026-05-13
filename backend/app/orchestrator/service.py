@@ -10,6 +10,7 @@ from uuid import uuid4
 LOGGER = logging.getLogger(__name__)
 
 from app.agents.sap.absence_schemas import SapAbsenceResult, SapDepartmentOverlapResult
+from app.agents.sap.schedule_agent import ScheduleAgent
 from app.connectors.mock_data import MOCK_EMPLOYEES
 from pydantic import ValidationError
 
@@ -107,6 +108,9 @@ class ChatOrchestrator:
         self._sap_absence_agent = sap_absence_agent
         self._dept_overlap_agent = dept_overlap_agent
         self._sap_client = sap_client
+        self._schedule_agent: ScheduleAgent | None = (
+            ScheduleAgent(client=sap_client) if sap_client else None
+        )
         # Shared reference to the container's map — populated at startup
         self._sap_employee_id_map: dict[str, str] = sap_employee_id_map if sap_employee_id_map is not None else {}
         # All SAP user IDs fetched at startup — used for workforce queries
@@ -271,6 +275,10 @@ class ChatOrchestrator:
                 answer = "Cancelling absence requests via chat is not yet available. Please use the SAP SuccessFactors portal."
                 status = "unsupported"
                 sap_result = {}
+
+            elif structured_intent.intent in {"holiday_query", "work_schedule_query"}:
+                answer, status, sap_result = await self._handle_schedule_query(
+                    structured_intent, acting_sap_id, context, message, trace)
 
             else:  # unknown → general chat
                 answer, status, sap_result = await self._handle_general_chat_intent(message, context, trace)
@@ -686,6 +694,67 @@ class ChatOrchestrator:
                 return answer, "clarification_required", sap_result
             self._record_step(trace, "sap_time_off_request", "error", err_str)
             return err_str, "error", {}
+
+    async def _handle_schedule_query(self, intent, acting_sap_id, context, message, trace):
+        client = self._sap_client or getattr(self._sap_absence_agent, "_client", None)
+        if not client:
+            return "Schedule and holiday queries are not available in this mode.", "unsupported", {}
+
+        # Rebuild agent with the resolved client each time (handles both mock and SAP modes)
+        agent = ScheduleAgent(client=client)
+
+        # Resolve specific employee if named
+        user_id = acting_sap_id
+        employee_name = intent.employee_name if intent.employee_reference == "specific_employee" else None
+        employee_found = True
+        if intent.employee_reference == "specific_employee" and intent.employee_name:
+            try:
+                resolved = await client.resolve_user_id_by_name(intent.employee_name)
+                if resolved:
+                    user_id = resolved
+                    employee_found = True
+                else:
+                    employee_found = False
+            except Exception:
+                employee_found = False
+
+        self._record_step(trace, "schedule_agent", "running",
+                          f"Delegating {intent.intent} to ScheduleAgent.", {"user_id": user_id})
+        # Map LLM intent to ScheduleAgent sub-intent so regex typo issues don't block it
+        schedule_intent_override = (
+            "holiday" if intent.intent == "holiday_query" else
+            "work_schedule" if intent.intent == "work_schedule_query" else None
+        )
+        result = await agent.handle(
+            message,
+            acting_sap_user_id=user_id,
+            step_recorder=lambda name, s, detail, data=None: self._record_step(trace, name, s, detail, data),
+            employee_name=employee_name,
+            employee_found=employee_found,
+            intent_override=schedule_intent_override,
+        )
+
+        if not result.handled:
+            return "I could not retrieve schedule data. Please try rephrasing.", "unavailable", {}
+
+        if result.status == "success":
+            sap_result = {
+                "intent": result.intent,
+                "holidays": result.holidays,
+                "work_schedule": result.work_schedule,
+                "date_range": result.date_range,
+                "employee_name": employee_name,
+                "employee_found": employee_found,
+            }
+            self._record_step(trace, "schedule_agent", "completed", "ScheduleAgent returned result.",
+                              {"holidays": len(result.holidays), "has_schedule": result.work_schedule is not None})
+            answer = result.summary_text or "No data found for that request."
+            return answer, "success", sap_result
+
+        if result.status == "needs_clarification":
+            return result.message, "clarification_required", {}
+
+        return result.message or "Could not retrieve the requested data.", "unavailable", {}
 
     async def _handle_general_chat_intent(self, message, context, trace):
         self._record_step(trace, "general_chat", "running", "Handling as general conversation.")

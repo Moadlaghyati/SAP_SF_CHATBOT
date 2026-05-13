@@ -162,6 +162,19 @@ class MockLocalLLMClient(LocalLLMClient):
             intent = "cancel_absence_request"
         elif any(k in lowered for k in ["team", "department", "my direct reports", "my team"]):
             intent = "team_absences"
+        elif any(k in lowered for k in [
+            "holiday", "holidays", "public holiday", "jour férié", "jours fériés",
+            "férié", "ferie", "eid", "ramadan", "throne day", "labour day",
+            "independence", "new year", "mawlid", "national day", "bank holiday",
+            "marche verte", "aïd", "aid al", "eid al", "hijri",
+        ]):
+            intent = "holiday_query"
+        elif any(k in lowered for k in [
+            "work schedule", "working hours", "work hours", "horaire",
+            "horaires de travail", "schedule", "working days", "what time",
+            "start time", "end time", "hours per week", "days per week",
+        ]):
+            intent = "work_schedule_query"
         else:
             intent = "unknown"
 
@@ -181,9 +194,49 @@ class MockLocalLLMClient(LocalLLMClient):
 
     async def generate_structured_answer(self, user_message: str, intent_json: dict, sap_result: dict) -> str:
         intent = intent_json.get("intent", "unknown")
+
+        if intent == "holiday_query":
+            holidays = sap_result.get("holidays", [])
+            date_range = sap_result.get("date_range", {})
+            start = date_range.get("startDate", "")
+            end = date_range.get("endDate", "")
+            if not holidays:
+                return f"No public holidays found between {start} and {end}."
+            lines = [f"Here are the **{len(holidays)}** public holiday(s) between {start} and {end}:\n"]
+            for h in holidays:
+                lines.append(f"• **{h['date']}** — {h['name']}")
+            return "\n".join(lines)
+
+        if intent == "work_schedule_query":
+            ws = sap_result.get("work_schedule")
+            if not ws:
+                return "No work schedule found for this employee."
+            name = ws.get("employee_display_name", ws.get("employee_id", "Employee"))
+            sched = ws.get("schedule_name", "Standard")
+            hours = ws.get("hours_per_week", 40)
+            days = ws.get("days_per_week", 5)
+            work_days = ws.get("work_days", [])
+            lines = [f"**{name}** follows the **{sched}** schedule:"]
+            lines.append(f"• {days} working days/week · {hours} hours/week")
+            if work_days:
+                for d in work_days:
+                    lines.append(f"• {d['day']}: {d['start']} – {d['end']} ({d['hours']}h)")
+            return "\n".join(lines)
+
         if not sap_result:
-            return "No matching absence information was found."
-        return f"Here is the SAP data for your request ({intent}): {sap_result}"
+            return "No matching information was found."
+
+        # Absence-related fallback
+        absences = sap_result.get("absences", [])
+        if absences:
+            return (
+                f"Found **{len(absences)}** absence record(s). "
+                + "; ".join(
+                    f"{a.get('absence_type','?')} ({a.get('start_date','?')} – {a.get('end_date','?')})"
+                    for a in absences[:5]
+                )
+            )
+        return sap_result.get("summary", sap_result.get("summary_text", "Request completed successfully."))
 
     async def health_check(self) -> tuple[bool, str]:
         return True, "Mock local LLM is ready."

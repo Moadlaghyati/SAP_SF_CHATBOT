@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.schemas.api import DemoUserSummary
-from app.schemas.domain import AbsenceRecord, Employee
+from app.schemas.domain import AbsenceRecord, Employee, Holiday, WorkDay, WorkSchedule
 
 MOCK_EMPLOYEES: list[Employee] = [
     Employee(
@@ -136,6 +136,60 @@ MOCK_ABSENCES: list[AbsenceRecord] = [
         days=1.0,
     ),
 ]
+
+# Morocco public holidays 2026
+MOCK_HOLIDAYS: list[Holiday] = [
+    Holiday(date="2026-01-01", name="New Year's Day", name_fr="Jour de l'An"),
+    Holiday(date="2026-01-11", name="Manifesto of Independence Day", name_fr="Présentation du Manifeste de l'Indépendance"),
+    Holiday(date="2026-03-20", name="Eid Al-Fitr (Day 1)", name_fr="Aïd Al-Fitr (1er jour)", type="religious"),
+    Holiday(date="2026-03-21", name="Eid Al-Fitr (Day 2)", name_fr="Aïd Al-Fitr (2ème jour)", type="religious"),
+    Holiday(date="2026-05-01", name="Labour Day", name_fr="Fête du Travail"),
+    Holiday(date="2026-05-27", name="Eid Al-Adha (Day 1)", name_fr="Aïd Al-Adha (1er jour)", type="religious"),
+    Holiday(date="2026-05-28", name="Eid Al-Adha (Day 2)", name_fr="Aïd Al-Adha (2ème jour)", type="religious"),
+    Holiday(date="2026-06-17", name="Islamic New Year", name_fr="Nouvel An Hijri", type="religious"),
+    Holiday(date="2026-07-30", name="Throne Day", name_fr="Fête du Trône"),
+    Holiday(date="2026-08-14", name="Oued Ed-Dahab Day", name_fr="Anniversaire de la Récupération de Oued Ed-Dahab"),
+    Holiday(date="2026-08-20", name="Revolution of the King and the People", name_fr="Fête de la Révolution du Roi et du Peuple"),
+    Holiday(date="2026-08-21", name="Youth Day", name_fr="Fête de la Jeunesse"),
+    Holiday(date="2026-08-26", name="Prophet's Birthday", name_fr="Aïd Al-Mawlid Annabawi", type="religious"),
+    Holiday(date="2026-11-06", name="Green March Day", name_fr="Fête de la Marche Verte"),
+    Holiday(date="2026-11-18", name="Independence Day", name_fr="Fête de l'Indépendance"),
+]
+
+_STANDARD_WORK_DAYS = [
+    WorkDay(day_of_week="Monday",    start_time="08:30", end_time="17:30", hours=8.0),
+    WorkDay(day_of_week="Tuesday",   start_time="08:30", end_time="17:30", hours=8.0),
+    WorkDay(day_of_week="Wednesday", start_time="08:30", end_time="17:30", hours=8.0),
+    WorkDay(day_of_week="Thursday",  start_time="08:30", end_time="17:30", hours=8.0),
+    WorkDay(day_of_week="Friday",    start_time="08:30", end_time="17:00", hours=8.0),
+]
+
+MOCK_WORK_SCHEDULES: dict[str, WorkSchedule] = {
+    emp.employee_id: WorkSchedule(
+        employee_id=emp.employee_id,
+        employee_display_name=emp.display_name,
+        schedule_name="Standard Morocco (40h/week)",
+        work_days=_STANDARD_WORK_DAYS,
+        hours_per_week=40.0,
+        days_per_week=5,
+    )
+    for emp in []  # filled below after MOCK_EMPLOYEES is defined
+}
+
+
+def _build_work_schedules() -> dict[str, WorkSchedule]:
+    return {
+        emp.employee_id: WorkSchedule(
+            employee_id=emp.employee_id,
+            employee_display_name=emp.display_name,
+            schedule_name="Standard Morocco (40h/week)",
+            work_days=_STANDARD_WORK_DAYS,
+            hours_per_week=40.0,
+            days_per_week=5,
+        )
+        for emp in MOCK_EMPLOYEES
+    }
+
 
 DEMO_USERS: list[DemoUserSummary] = [
     DemoUserSummary(
