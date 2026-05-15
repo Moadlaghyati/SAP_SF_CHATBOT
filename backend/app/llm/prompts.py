@@ -248,8 +248,8 @@ Date reference table — use these exact values:
 Intent definitions:
 - leave_balance: user asks about remaining vacation/sick/leave days they have (e.g. "how many days do I have left", "what is my leave balance")
 - upcoming_absences: user asks who is or will be absent in the future (e.g. "who is absent", "who will be absent next week", "show upcoming absences")
-- absence_history: user asks about past absences (e.g. "show my absences last month", "how many days was I absent last year")
-- approval_status: user asks about existing leave requests — their status, pending requests, or approval state (e.g. "is my leave approved", "what is the status of my request", "show pending leave requests", "show my pending requests", "what requests are pending", "show leave requests for X")
+- absence_history: user asks to VIEW absences — past, present, approved, declined, or filtered by status (e.g. "show my absences last month", "how many days was I absent last year", "show Fouzi approved absences", "give me declined absences for Walid", "show all absences for Ahmed this year", "absences approuvées de Fouzi")
+- approval_status: ONLY for viewing the STATUS of a leave REQUEST — pending/approved/rejected requests in the system (e.g. "is my leave request approved?", "show my pending requests", "what is the status of my request"). Do NOT use for "show approved absences" — that is absence_history.
 - create_absence_request: user wants to CREATE or SUBMIT a NEW leave request (e.g. "I want to request leave", "submit vacation request", "book leave", "I need 3 days off"). ONLY use this when the user explicitly wants to create something new — never use it when the user is asking to VIEW existing requests.
 - cancel_absence_request: user wants to cancel a leave request (e.g. "cancel my leave", "withdraw my vacation request")
 - team_absences: user asks about their team or department absences (e.g. "who on my team is absent", "show my department absences", "absences in my team")
@@ -274,6 +274,12 @@ Examples (note: typos like "schedual" must still be classified correctly):
 - "who will be absent next week?" → {{"intent":"upcoming_absences","employee_reference":"unknown","date_range":{{"start":"{next_week_start.isoformat()}","end":"{next_week_end.isoformat()}"}},"clarification_needed":false}}
 - "show absences for my team this month" → {{"intent":"team_absences","employee_reference":"manager_team","date_range":{{"start":"{this_month_start.isoformat()}","end":"{this_month_end.isoformat()}"}},"clarification_needed":false}}
 - "show my absences last month" → {{"intent":"absence_history","employee_reference":"current_user","date_range":{{"start":"{last_month_start.isoformat()}","end":"{last_month_end.isoformat()}"}},"clarification_needed":false}}
+- "can you give me Fouzi Lekjaa approved absences" → {{"intent":"absence_history","employee_reference":"specific_employee","employee_name":"Fouzi Lekjaa","extracted_parameters":{{"approval_status_filter":"APPROVED"}},"clarification_needed":false}}
+- "show Walid declined absences this year" → {{"intent":"absence_history","employee_reference":"specific_employee","employee_name":"Walid","date_range":{{"start":"{today.year}-01-01","end":"{today.year}-12-31"}},"extracted_parameters":{{"approval_status_filter":"REJECTED"}},"clarification_needed":false}}
+- "show Walid cancelled absences" → {{"intent":"absence_history","employee_reference":"specific_employee","employee_name":"Walid","extracted_parameters":{{"approval_status_filter":"CANCELLED"}},"clarification_needed":false}}
+- "give me all absences for Ahmed" → {{"intent":"absence_history","employee_reference":"specific_employee","employee_name":"Ahmed","extracted_parameters":{{}},"clarification_needed":false}}
+- "show pending absences for my team" → {{"intent":"team_absences","employee_reference":"manager_team","extracted_parameters":{{"approval_status_filter":"PENDING"}},"clarification_needed":false}}
+- "absences approuvées de Fouzi" → {{"intent":"absence_history","employee_reference":"specific_employee","employee_name":"Fouzi","extracted_parameters":{{"approval_status_filter":"APPROVED"}},"clarification_needed":false}}
 - "I want to request 3 days of annual leave" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"annual leave","clarification_needed":false}}
 - "I want to request marriage leave for Fouzi Lekjaa from June 10 to June 13" → {{"intent":"create_absence_request","employee_reference":"specific_employee","employee_name":"Fouzi Lekjaa","date_range":{{"start":"2026-06-10","end":"2026-06-13"}},"absence_type":"marriage leave","clarification_needed":false}}
 - "submit a sick leave request for next week" → {{"intent":"create_absence_request","employee_reference":"current_user","absence_type":"sick leave","date_range":{{"start":"{next_week_start.isoformat()}","end":"{next_week_end.isoformat()}"}},"clarification_needed":false}}
@@ -295,6 +301,12 @@ Examples (note: typos like "schedual" must still be classified correctly):
 - "what is Leila's schedule?" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Leila","clarification_needed":false}}
 - "horaire de travail de Walid" → {{"intent":"work_schedule_query","employee_reference":"specific_employee","employee_name":"Walid","clarification_needed":false}}
 - "hello, what can you do?" → {{"intent":"unknown","employee_reference":"unknown","clarification_needed":false}}
+
+CRITICAL disambiguation — read before answering:
+- "approved absences", "declined absences", "rejected absences", "all absences for X" → ALWAYS `absence_history`. NEVER `approval_status` or `unknown`.
+- `approval_status` is ONLY for: viewing the status of a pending leave REQUEST ("is my request approved?", "show pending requests").
+- If the user asks to SEE or LIST absences (even filtered by "approved"/"declined") → `absence_history`.
+- When the user filters by approval status, set `extracted_parameters.approval_status_filter` to: "APPROVED", "CANCELLED", "REJECTED", or "PENDING" accordingly.
 
 Question: {question}""".strip()
 

@@ -528,6 +528,17 @@ class ChatOrchestrator:
                           "SapAbsenceAgent returned result.", {"status": result.status})
 
         if result.status == "success":
+            # Apply approval_status_filter if the LLM extracted one
+            status_filter = (intent.extracted_parameters or {}).get("approval_status_filter")
+            if status_filter and isinstance(sap_result.get("absences"), list):
+                filter_upper = status_filter.upper()
+                sap_result["absences"] = [
+                    a for a in sap_result["absences"]
+                    if (a.get("approval_status") or "").upper() == filter_upper
+                ]
+                sap_result["absence_count"] = len(sap_result["absences"])
+                sap_result["applied_filter"] = status_filter
+
             answer = await self._generate_structured_answer(message, intent.model_dump(), sap_result)
             return answer, "success", sap_result
         else:
